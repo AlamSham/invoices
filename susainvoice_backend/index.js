@@ -27,7 +27,7 @@ const limiter = rateLimit({
 app.use(limiter);
 
 // ✅ CORS Setup
-const allowedOrigins = ['https://invoice-65289.web.app','http://localhost:5173',"https://serene-faun-12834b.netlify.app"];
+const allowedOrigins = ['https://invoice-65289.web.app','http://localhost:5173',"https://serene-faun-12834b.netlify.app","https://peppy-hummingbird-3955c9.netlify.app"];
 app.use(
   cors({
     origin: allowedOrigins,
@@ -56,3 +56,4 @@ app.use('/api/dashboard', dashboardRoutes);
 // ✅ Start Server
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
