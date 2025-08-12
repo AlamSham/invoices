@@ -100,72 +100,6 @@ export default function RentalDetails() {
     }
   }
 
-  type TimelineEvent = { date: string; label: string; details?: string }
-  const buildTimeline = (data: RentalInvoiceData | null): TimelineEvent[] => {
-    if (!data) return []
-    const evts: TimelineEvent[] = []
-
-    // Issue / Advance
-    if ((data as any).Date) {
-      evts.push({ date: (data as any).Date as string, label: `Invoice Issued (${data.invoiceNumber})` })
-    }
-    if (data.paymentDetails?.advanceAmount) {
-      evts.push({ date: (data as any).Date as string, label: `Advance Received ₹${Number(data.paymentDetails.advanceAmount || 0).toLocaleString()}` })
-    }
-
-    // Rental period per item
-    ;(data.items || []).forEach((it, idx) => {
-      if (it.startDate) {
-        const name = it.productName || `Item ${idx + 1}`
-        if (it.endDate) {
-          evts.push({ date: it.startDate, label: `Rental started for ${name}`, details: `From ${fmtDate(it.startDate)} to ${fmtDate(it.endDate)} (${it.totalDays || '-'} days)` })
-        } else {
-          evts.push({ date: it.startDate, label: `Rental started for ${name}` })
-        }
-      }
-    })
-
-    // Partial returns + partial payments
-    if ((data as any).partialReturnHistory && (data as any).partialReturnHistory.length) {
-      (data as any).partialReturnHistory.forEach((entry: any) => {
-        const date = entry.returnDate || entry.createdAt || (data as any).Date
-        const payment = typeof entry.partialPayment === 'number' ? entry.partialPayment : undefined
-        const returnedSummary = Array.isArray(entry.returnedItems) && entry.returnedItems.length
-          ? entry.returnedItems.map((ri: any) => `${ri.productName || 'Item'}: ${ri.returnedQuantity || 0}`).join(', ')
-          : undefined
-        evts.push({
-          date,
-          label: `Partial return${payment ? ` + payment ₹${Number(payment).toLocaleString()}` : ''}`,
-          details: returnedSummary || entry.notes || undefined
-        })
-      })
-    }
-
-    // Damages (if any recorded in paymentDetails on settlement)
-    if ((data.paymentDetails?.damageCharges || 0) > 0) {
-      const sDate = (data.paymentDetails as any)?.settlementDate || (data.rentalDetails as any)?.settlementDate || (data as any).updatedAt || (data as any).Date
-      evts.push({ date: sDate, label: `Damage charges added ₹${Number(data.paymentDetails?.damageCharges || 0).toLocaleString()}` })
-    }
-
-    // Final settlement
-    if (getInvoiceTypeFromData(data) === 'FULL') {
-      const sDate = (data.paymentDetails as any)?.settlementDate || (data.rentalDetails as any)?.settlementDate || (data as any).updatedAt
-      if ((data.paymentDetails as any)?.finalPayment) {
-        evts.push({ date: sDate, label: `Final payment received ₹${Number((data.paymentDetails as any).finalPayment || 0).toLocaleString()}` })
-      }
-      evts.push({ date: sDate, label: 'Final settlement completed', details: `Status: ${data.rentalDetails?.status || '-'}` })
-    }
-
-    // Sort by date ascending when possible
-    evts.sort((a, b) => {
-      const da = new Date(a.date).getTime()
-      const db = new Date(b.date).getTime()
-      if (isNaN(da) || isNaN(db)) return 0
-      return da - db
-    })
-    return evts
-  }
-
   const handleGeneratePDF = async (type: 'TAX' | 'PROFORMA') => {
     setIsGeneratingPDF(true)
     setCurrentPDFType(type)
@@ -178,31 +112,21 @@ export default function RentalDetails() {
       if (element) {
         await new Promise(resolve => setTimeout(resolve, 500))
 
-        // Temporarily clamp Activity Timeline height so it doesn't exceed 2 pages in the PDF
-        const tlPageWidthMm = 210
-        const tlMarginMm = 10
-        const tlUsableWidthMm = tlPageWidthMm - tlMarginMm * 2
-        const tlPageHeightMm = 297
-        const tlDrawHeightMm = tlPageHeightMm - tlMarginMm * 2
-        const timelineEl = element.querySelector('#activity-timeline') as HTMLElement | null
-        let originalMaxHeight = ''
-        let originalOverflow = ''
-        // Spacer to align timeline to start of page 2
+        // Ensure Partial Return History begins exactly at the top of page 2 in the PDF
+        const pageWidthMm = 210
+        const marginMm = 10
+        const usableWidthMm = pageWidthMm - marginMm * 2
+        const pageHeightMm = 297
+        const drawHeightMm = pageHeightMm - marginMm * 2
+        const prhEl = element.querySelector('#partial-return-history') as HTMLElement | null
         let spacerEl: HTMLDivElement | null = null
-        if (timelineEl) {
-          const pxPerMmScreen = element.clientWidth / tlUsableWidthMm
-          const maxTimelinePx = Math.floor(pxPerMmScreen * tlDrawHeightMm * 2) // max 2 pages
-          originalMaxHeight = timelineEl.style.maxHeight
-          originalOverflow = timelineEl.style.overflow
-          timelineEl.style.maxHeight = `${maxTimelinePx}px`
-          timelineEl.style.overflow = 'hidden'
-
-          // Ensure timeline begins exactly at the top of page 2 (or nearest page boundary)
-          const pageSliceHeightPxScreen = Math.floor(pxPerMmScreen * tlDrawHeightMm)
-          // Compute Y position of timeline inside container
+        if (prhEl) {
+          const pxPerMmScreen = element.clientWidth / usableWidthMm
+          const pageSliceHeightPxScreen = Math.floor(pxPerMmScreen * drawHeightMm)
+          // Compute Y position of PRH inside container
           const containerTop = element.getBoundingClientRect().top
-          const timelineTop = timelineEl.getBoundingClientRect().top
-          const offsetY = Math.max(0, Math.round(timelineTop - containerTop))
+          const prhTop = prhEl.getBoundingClientRect().top
+          const offsetY = Math.max(0, Math.round(prhTop - containerTop))
           // Desired start at next page boundary (at least one full page)
           const desiredStart = pageSliceHeightPxScreen
           let spacerHeight = 0
@@ -215,11 +139,11 @@ export default function RentalDetails() {
           }
           if (spacerHeight > 0) {
             spacerEl = document.createElement('div')
-            spacerEl.setAttribute('data-timeline-spacer', 'true')
+            spacerEl.setAttribute('data-prh-spacer', 'true')
             spacerEl.style.height = `${spacerHeight}px`
             spacerEl.style.width = '100%'
             spacerEl.style.display = 'block'
-            timelineEl.parentElement?.insertBefore(spacerEl, timelineEl)
+            prhEl.parentElement?.insertBefore(spacerEl, prhEl)
           }
         }
         const canvas = await html2canvas.default(element, {
@@ -228,14 +152,9 @@ export default function RentalDetails() {
           allowTaint: true,
           backgroundColor: '#ffffff'
         })
-        // Restore timeline styles after capture
-        if (timelineEl) {
-          timelineEl.style.maxHeight = originalMaxHeight
-          timelineEl.style.overflow = originalOverflow
-          // Remove spacer if added
-          if (spacerEl && spacerEl.parentElement) {
-            spacerEl.parentElement.removeChild(spacerEl)
-          }
+        // Remove PRH spacer if added
+        if (spacerEl && spacerEl.parentElement) {
+          spacerEl.parentElement.removeChild(spacerEl)
         }
         // Slice-based pagination to avoid any overlap/duplication
         const pageWidth = 210
@@ -437,7 +356,7 @@ export default function RentalDetails() {
 
         {/* Partial Return History (Read-only) */}
         {(invoiceData.partialReturnHistory && invoiceData.partialReturnHistory.length > 0) && (
-          <div style={{
+          <div id="partial-return-history" style={{
             backgroundColor: '#ecfeff',
             padding: '20px',
             borderRadius: '8px',
@@ -485,30 +404,129 @@ export default function RentalDetails() {
           </div>
         )}
 
-        {/* Activity Timeline */}
-        <div id="activity-timeline" style={{
-          backgroundColor: '#f8fafc',
+        {/* Activity Timeline removed as per request */}
+
+        {/* Logs Console */}
+        <div id="logs-console" style={{
+          backgroundColor: '#f9fafb',
           padding: '20px',
           borderRadius: '8px',
           marginTop: '16px',
-          border: '2px solid #cbd5e1'
+          border: '2px dashed #e5e7eb'
         }}>
-          <h3 style={{ fontWeight: 'bold', marginBottom: '12px', color: '#0f172a', fontSize: '18px' }}>Activity Timeline</h3>
+          <h3 style={{ fontWeight: 'bold', marginBottom: '12px', color: '#111827', fontSize: '18px' }}>Logs</h3>
           {(() => {
-            const timeline = buildTimeline(invoiceData)
-            if (!timeline.length) return <div style={{ fontSize: '12px', color: '#64748b' }}>No activity recorded.</div>
+            type LogRow = {
+              kind: 'ISSUE' | 'ITEM' | 'RETURN' | 'DAMAGE' | 'FINAL';
+              issueDate?: string;
+              returnDate?: string;
+              days?: number | string;
+              itemName?: string;
+              rate?: number | string;
+              qty?: number | string;
+              notes?: string;
+              amount?: number | string;
+            }
+            const rows: LogRow[] = []
+            const d: any = invoiceData as any
+            // Issue row
+            if (d?.Date || d?.createdAt) {
+              rows.push({ kind: 'ISSUE', issueDate: d.Date || d.createdAt, notes: `Invoice Issued (${invoiceData.invoiceNumber || '-'})` })
+            }
+            // Items rows
+            ;(invoiceData.items || []).forEach((it: any) => {
+              rows.push({
+                kind: 'ITEM',
+                issueDate: it.startDate,
+                returnDate: it.endDate,
+                days: it.totalDays ?? '-',
+                itemName: (it.productName || '-'),
+                rate: '-', // show dash per requested format
+                qty: '-',  // show dash per requested format
+                notes: 'Rental period'
+              })
+            })
+            // Partial returns
+            if ((d.partialReturnHistory || []).length) {
+              d.partialReturnHistory.forEach((entry: any) => {
+                const retDate = entry.returnDate || entry.createdAt || d.Date
+                if (Array.isArray(entry.returnedItems) && entry.returnedItems.length) {
+                  entry.returnedItems.forEach((ri: any) => {
+                    rows.push({
+                      kind: 'RETURN',
+                      issueDate: retDate,
+                      days: '-', // show dash per requested format
+                      itemName: ri.productName || '-',
+                      qty: ri.returnedQuantity ?? '-',
+                      notes: 'Partial return',
+                      amount: (ri.partialAmount ?? entry.partialPayment) ?? '-'
+                    })
+                  })
+                } else {
+                  rows.push({
+                    kind: 'RETURN',
+                    issueDate: retDate,
+                    days: '-', // show dash per requested format
+                    notes: 'Partial return',
+                    amount: entry.partialPayment ?? '-'
+                  })
+                }
+              })
+            }
+            // Damage charges
+            if ((invoiceData.paymentDetails?.damageCharges || 0) > 0) {
+              rows.push({
+                kind: 'DAMAGE',
+                issueDate: (invoiceData.paymentDetails as any)?.settlementDate || d.updatedAt || d.Date,
+                notes: 'Damage charges',
+                amount: invoiceData.paymentDetails?.damageCharges
+              })
+            }
+            // Final bill
+            if ((invoiceData.paymentDetails as any)?.finalAmount) {
+              rows.push({
+                kind: 'FINAL',
+                issueDate: (invoiceData.paymentDetails as any)?.settlementDate || d.updatedAt || d.Date,
+                notes: 'Final bill',
+                amount: (invoiceData.paymentDetails as any).finalAmount
+              })
+            }
+            if (!rows.length) {
+              return <div style={{ fontSize: '12px', color: '#6b7280' }}>No logs available.</div>
+            }
             return (
-              <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
-                {timeline.map((e, i) => (
-                  <li key={i} style={{ display: 'flex', gap: '12px', marginBottom: '10px', alignItems: 'flex-start' }}>
-                    <div style={{ minWidth: '120px', color: '#334155', fontWeight: 600 }}>{fmtDate(e.date)}</div>
-                    <div>
-                      <div style={{ fontWeight: 600 }}>{e.label}</div>
-                      {e.details && <div style={{ fontSize: '12px', color: '#475569' }}>{e.details}</div>}
-                    </div>
-                  </li>
-                ))}
-              </ul>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                  <thead>
+                    <tr style={{ backgroundColor: '#f3f4f6' }}>
+                      <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid #e5e7eb' }}>SI No.</th>
+                      <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid #e5e7eb' }}>Issue Date</th>
+                      <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid #e5e7eb' }}>Return Date</th>
+                      <th style={{ textAlign: 'right', padding: '8px', borderBottom: '1px solid #e5e7eb' }}>No Days</th>
+                      <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid #e5e7eb' }}>Items</th>
+                      <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid #e5e7eb' }}>Name of Item</th>
+                      <th style={{ textAlign: 'right', padding: '8px', borderBottom: '1px solid #e5e7eb' }}>Rate</th>
+                      <th style={{ textAlign: 'right', padding: '8px', borderBottom: '1px solid #e5e7eb' }}>Qty</th>
+                      <th style={{ textAlign: 'left', padding: '8px', borderBottom: '1px solid #e5e7eb' }}>Notes / Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r, idx) => (
+                      <tr key={idx}>
+                        <td style={{ padding: '8px', borderBottom: '1px solid #f3f4f6' }}>{idx + 1}</td>
+                        <td style={{ padding: '8px', borderBottom: '1px solid #f3f4f6' }}>{fmtDate(r.issueDate)}</td>
+                        <td style={{ padding: '8px', borderBottom: '1px solid #f3f4f6' }}>{fmtDate(r.returnDate)}</td>
+                        <td style={{ padding: '8px', borderBottom: '1px solid #f3f4f6', textAlign: 'right' }}>{r.days ?? '-'}</td>
+                        <td style={{ padding: '8px', borderBottom: '1px solid #f3f4f6' }}>{r.kind}</td>
+                        <td style={{ padding: '8px', borderBottom: '1px solid #f3f4f6' }}>{r.itemName ?? '-'}</td>
+                        <td style={{ padding: '8px', borderBottom: '1px solid #f3f4f6', textAlign: 'right' }}>{typeof r.rate === 'number' ? `₹${r.rate.toLocaleString()}` : (r.rate ?? '-')}</td>
+                        <td style={{ padding: '8px', borderBottom: '1px solid #f3f4f6', textAlign: 'right' }}>{r.qty ?? '-'}</td>
+                        <td style={{ padding: '8px', borderBottom: '1px solid #f3f4f6' }}>{r.notes}{r.amount !== undefined && r.amount !== null && r.amount !== '-' ? `: ₹${Number(r.amount).toLocaleString()}` : ''}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )
           })()}
         </div>
