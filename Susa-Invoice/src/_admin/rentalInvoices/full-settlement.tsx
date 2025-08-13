@@ -9,6 +9,7 @@ import RentalActions from "./rental-actions"
 import type { RentalInvoiceData, CompanyDetails } from "./rental-types"
 import logo from "../../assets/logo1.jpeg"
 import stamp from "../../assets/stamp.png"
+import { daysBetween, addDays } from "./date-utils"
 
 export default function FullSettlement() {
   const { invoiceId: parentInvoiceId } = useParams<{ invoiceId: string }>()
@@ -118,7 +119,64 @@ export default function FullSettlement() {
       if (response.data.success) {
         const parent = response.data.data
         
-        // Populate all fields with parent invoice data
+        // Build items with final accrual preview and compute totals
+        let subtotalSum = 0
+        const builtItems = parent.items.map((item: any) => {
+          const rented = typeof item.rentedQuantity === 'string' ? parseInt(item.rentedQuantity) || 0 : item.rentedQuantity || 0
+          const alreadyReturned = typeof item.returnedQuantity === 'string' ? parseInt(item.returnedQuantity) || 0 : item.returnedQuantity || 0
+          const remaining = Math.max(0, rented - alreadyReturned)
+          // find last partial return date for this product
+          let lastReturnDate: string | undefined
+          const prh: any[] = parent.partialReturnHistory || []
+          prh.forEach((entry: any) => {
+            const retDate = entry.returnDate || entry.createdAt
+            ;(entry.returnedItems || []).forEach((ri: any) => {
+              if ((ri.productName || '') === (item.productName || '')) {
+                const q = typeof ri.returnedQuantity === 'string' ? parseFloat(ri.returnedQuantity) || 0 : ri.returnedQuantity || 0
+                if (q > 0 && retDate) {
+                  if (!lastReturnDate || new Date(retDate) > new Date(lastReturnDate)) lastReturnDate = retDate
+                }
+              }
+            })
+          })
+          // Accrual starts from the later of startDate and day-after-last-partial
+          const dayAfterLast = lastReturnDate ? addDays(lastReturnDate, 1) : ''
+          const rawStart = item.startDate || ''
+          let accruesFrom = rawStart || dayAfterLast
+          if (rawStart && dayAfterLast) {
+            accruesFrom = new Date(dayAfterLast) > new Date(rawStart) ? dayAfterLast : rawStart
+          } else if (dayAfterLast) {
+            accruesFrom = dayAfterLast
+          }
+          const endDate = item.endDate || ''
+          const days = accruesFrom && endDate ? daysBetween(accruesFrom, endDate) : 0
+          const rate = typeof item.dailyRate === 'string' ? parseFloat(item.dailyRate) || 0 : item.dailyRate || 0
+          const computedAmount = Math.max(0, remaining) * Math.max(0, rate) * Math.max(0, days)
+          subtotalSum += computedAmount
+          return {
+            ...item,
+            originalReturnedQuantity: alreadyReturned,
+            rentedQuantity: remaining,
+            returnedQuantity: '',
+            partialReturnDate: '',
+            totalDays: days || 0,
+            rentAmount: computedAmount || 0,
+            amount: computedAmount || 0,
+          }
+        })
+
+        const cgstRate = parent.cgstRate ?? 9
+        const sgstRate = parent.sgstRate ?? 9
+        const ugstRate = parent.ugstRate ?? 0
+        const igstRate = parent.igstRate ?? 0
+        const cgstAmount = (subtotalSum * cgstRate) / 100
+        const sgstAmount = (subtotalSum * sgstRate) / 100
+        const ugstAmount = (subtotalSum * ugstRate) / 100
+        const igstAmount = (subtotalSum * igstRate) / 100
+        const totalTaxAmount = cgstAmount + sgstAmount + ugstAmount + igstAmount
+        const totalAmount = subtotalSum + totalTaxAmount
+
+        // Populate all fields with computed data
         setInvoiceData({
           invoiceNumber: `FULL-${parent.invoiceNumber}`,
           Date: new Date().toISOString().split("T")[0],
@@ -126,32 +184,18 @@ export default function FullSettlement() {
           poNumber: parent.poNumber || "",
           billTo: parent.billTo,
           shipTo: parent.shipTo,
-          items: parent.items.map((item: any) => {
-            const rented = typeof item.rentedQuantity === 'string' ? parseInt(item.rentedQuantity) || 0 : item.rentedQuantity || 0
-            const alreadyReturned = typeof item.returnedQuantity === 'string' ? parseInt(item.returnedQuantity) || 0 : item.returnedQuantity || 0
-            const remaining = Math.max(0, rented - alreadyReturned)
-            return {
-              ...item,
-              // preserve cumulative returned so far
-              originalReturnedQuantity: alreadyReturned,
-              // for full settlement, treat the quantity as remaining to be returned
-              rentedQuantity: remaining,
-              // fresh return input fields for this settlement
-              returnedQuantity: '',
-              partialReturnDate: '',
-            }
-          }),
-          subtotal: parent.subtotal || 0,
-          cgstRate: parent.cgstRate || 9,
-          cgstAmount: parent.cgstAmount || 0,
-          sgstRate: parent.sgstRate || 9,
-          sgstAmount: parent.sgstAmount || 0,
-          ugstRate: parent.ugstRate || 0,
-          ugstAmount: parent.ugstAmount || 0,
-          igstRate: parent.igstRate || 0,
-          igstAmount: parent.igstAmount || 0,
-          totalTaxAmount: parent.totalTaxAmount || 0,
-          totalAmount: parent.totalAmount || 0,
+          items: builtItems,
+          subtotal: subtotalSum,
+          cgstRate,
+          cgstAmount,
+          sgstRate,
+          sgstAmount,
+          ugstRate,
+          ugstAmount,
+          igstRate,
+          igstAmount,
+          totalTaxAmount,
+          totalAmount,
           paymentTerms: parent.paymentTerms || "Net 30 Days from invoice date",
           termsConditions: parent.termsConditions || "Warranty provided by principal company only",
           bankDetails: parent.bankDetails,
@@ -414,7 +458,16 @@ export default function FullSettlement() {
             border: '2px solid #06b6d4'
           }}>
             <h3 style={{ fontWeight: 'bold', marginBottom: '12px', color: '#164e63', fontSize: '18px' }}> Partial Return History</h3>
-            {invoiceData.partialReturnHistory.map((entry: any, idx: number) => (
+            {invoiceData.partialReturnHistory.map((entry: any, idx: number) => {
+              const baseSubtotal = (entry.returnedItems || []).reduce((s: number, ri: any) => s + (parseFloat(ri.partialAmount) || 0), 0)
+              const cgstAmt = baseSubtotal * ((invoiceData.cgstRate || 0) / 100)
+              const sgstAmt = baseSubtotal * ((invoiceData.sgstRate || 0) / 100)
+              const ugstAmt = baseSubtotal * ((invoiceData.ugstRate || 0) / 100)
+              const igstAmt = baseSubtotal * ((invoiceData.igstRate || 0) / 100)
+              const eventTotal = baseSubtotal + cgstAmt + sgstAmt + ugstAmt + igstAmt
+              const collected = typeof entry.partialPayment === 'number' ? entry.partialPayment : 0
+              const diff = collected - eventTotal
+              return (
               <div key={idx} style={{ marginBottom: '16px' }}>
                 <div style={{ display: 'flex', gap: '16px', marginBottom: '8px', fontSize: '13px' }}>
                   <div><strong>Date:</strong> {entry.returnDate || '-'}</div>
@@ -445,12 +498,27 @@ export default function FullSettlement() {
                         ))}
                       </tbody>
                     </table>
+                    {/* Per-event totals breakdown */}
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', marginTop: '10px', fontSize: '12px' }}>
+                      <div><strong>Base:</strong> ₹{baseSubtotal.toLocaleString()}</div>
+                      {invoiceData.cgstRate ? <div><strong>CGST {invoiceData.cgstRate}%:</strong> ₹{cgstAmt.toLocaleString()}</div> : null}
+                      {invoiceData.sgstRate ? <div><strong>SGST {invoiceData.sgstRate}%:</strong> ₹{sgstAmt.toLocaleString()}</div> : null}
+                      {invoiceData.ugstRate ? <div><strong>UGST {invoiceData.ugstRate}%:</strong> ₹{ugstAmt.toLocaleString()}</div> : null}
+                      {invoiceData.igstRate ? <div><strong>IGST {invoiceData.igstRate}%:</strong> ₹{igstAmt.toLocaleString()}</div> : null}
+                      <div><strong>Event Total:</strong> ₹{eventTotal.toLocaleString()}</div>
+                      <div><strong>Collected:</strong> ₹{collected.toLocaleString()}</div>
+                      {diff !== 0 && (
+                        <div style={{ fontWeight: 600, color: diff > 0 ? '#059669' : '#dc2626' }}>
+                          {diff > 0 ? `Applied to outstanding: ₹${diff.toLocaleString()}` : `Remaining due: ₹${Math.abs(diff).toLocaleString()}`}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 ) : (
                   <div style={{ fontSize: '12px', color: '#64748b' }}>No returned items recorded in this entry.</div>
                 )}
               </div>
-            ))}
+            )})}
           </div>
         )}
 

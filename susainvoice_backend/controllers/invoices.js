@@ -306,43 +306,67 @@ export const updateRentalInvoice = async (req, res) => {
       };
     }
 
-    // Compute taxes for this partial event using existing invoice tax rates
+    // Compute optional extension charges for remaining quantities if client provided a new endDate
+    // Server remains source of truth: we compute using remaining qty, daily rate, and days from new start to provided endDate
+    let extensionSubtotal = 0;
+    for (let i = 0; i < updatedItems.length; i++) {
+      const ui = updatedItems[i] || {};
+      const inc = incomingItems[i] || {};
+      const rentedQty = parseInt(ui.rentedQuantity) || 0;
+      const returnedQty = parseInt(ui.returnedQuantity) || 0;
+      const remainingQty = Math.max(0, rentedQty - returnedQty);
+      const rate = parseFloat((inc.dailyRate ?? ui.dailyRate) || 0);
+      // Only compute extension if we have remaining qty and a future endDate provided by client
+      if (remainingQty > 0 && inc.endDate) {
+        const startForRemaining = ui.startDate || existingInvoice.rentalDetails?.startDate;
+        const endForRemaining = inc.endDate;
+        const daysRem = daysBetween(startForRemaining, endForRemaining);
+        const extAmt = Math.max(0, daysRem) * Math.max(0, rate) * Math.max(0, remainingQty);
+        extensionSubtotal += extAmt;
+        try {
+          console.log('--- EXTENSION ITEM DEBUG ---');
+          console.log('Item:', ui.productName, 'RemainingQty:', remainingQty, 'Rate:', rate, 'Start:', startForRemaining, 'End:', endForRemaining, 'Days:', daysRem, 'ExtAmount:', extAmt);
+        } catch {}
+      }
+    }
+
+    // Compute taxes for this event (partial returns + optional extensions) using existing invoice tax rates
     const cgstRate = parseFloat(existingInvoice.cgstRate || 0);
     const sgstRate = parseFloat(existingInvoice.sgstRate || 0);
     const ugstRate = parseFloat(existingInvoice.ugstRate || 0);
     const igstRate = parseFloat(existingInvoice.igstRate || 0);
-    const cgstAmount = (partialSubtotal * cgstRate) / 100;
-    const sgstAmount = (partialSubtotal * sgstRate) / 100;
-    const ugstAmount = (partialSubtotal * ugstRate) / 100;
-    const igstAmount = (partialSubtotal * igstRate) / 100;
-    const partialTax = cgstAmount + sgstAmount + ugstAmount + igstAmount;
-    const partialTotal = partialSubtotal + partialTax;
+    const eventSubtotal = partialSubtotal + extensionSubtotal;
+    const cgstAmount = (eventSubtotal * cgstRate) / 100;
+    const sgstAmount = (eventSubtotal * sgstRate) / 100;
+    const ugstAmount = (eventSubtotal * ugstRate) / 100;
+    const igstAmount = (eventSubtotal * igstRate) / 100;
+    const eventTax = cgstAmount + sgstAmount + ugstAmount + igstAmount;
+    const eventTotal = eventSubtotal + eventTax;
 
     try {
       console.log('=== PARTIAL SUMMARY DEBUG ===');
       console.log('EntryDate:', entryDate);
       console.log('ReturnedItems:', returnedItemsForHistory);
-      console.log('Subtotal:', partialSubtotal, 'Tax:', partialTax, 'Total:', partialTotal);
+      console.log('Subtotal:', eventSubtotal, 'Tax:', eventTax, 'Total:', eventTotal);
       console.log('CGST/SGST/UGST/IGST:', { cgstRate, sgstRate, ugstRate, igstRate });
     } catch {}
 
-    // Cash-first, then advance for any remaining partial amount
+    // Apply ADVANCE first, then collect CASH for any remaining (per business rule)
     let newAdvance = originalAdvance;
-    // Treat client-sent paidAmount as cash collected for THIS event (not lifecycle total)
-    const requestedPaidNow = Number((req.body?.paymentDetails?.paidAmount ?? 0));
-    let appliedFromCashToPartial = Math.min(partialTotal, Math.max(0, requestedPaidNow));
-    let remainingPartialAfterCash = Math.max(0, Number((partialTotal - appliedFromCashToPartial).toFixed(2)));
-    let appliedFromAdvance = Math.min(newAdvance, remainingPartialAfterCash);
+    const requestedPaidNow = Number((req.body?.paymentDetails?.paidAmount ?? 0)); // cash collected this event
+    let appliedFromAdvance = Math.min(eventTotal, Math.max(0, newAdvance));
     newAdvance = Number((newAdvance - appliedFromAdvance).toFixed(2));
-    const collectedNow = Number((requestedPaidNow).toFixed(2)); // full cash collected now
+    let remainingAfterAdvance = Math.max(0, Number((eventTotal - appliedFromAdvance).toFixed(2)));
+    let appliedFromCashToEvent = Math.min(remainingAfterAdvance, Math.max(0, requestedPaidNow));
+    const collectedNow = Number((appliedFromCashToEvent).toFixed(2));
     const newPaidAmount = Number((alreadyPaid + collectedNow).toFixed(2));
 
     // Re-baseline outstanding to current invoice total (from client request) minus (advance + paid so far)
     // This aligns with user's expectation: outstanding = currentTotal - (advance + partial cash total)
-    const baseTotal = parseFloat(existingInvoice.paymentDetails?.totalRentAmount || existingInvoice.totalAmount || 0);
-    const currentInvoiceTotal = parseFloat(req.body?.totalAmount ?? partialTotal ?? 0);
-    const paidSoFarTotal = Number((originalAdvance + newPaidAmount).toFixed(2));
-    const newOutstandingAmount = Math.max(0, Number((currentInvoiceTotal - paidSoFarTotal).toFixed(2)));
+    const previousLifecycleTotal = parseFloat(existingInvoice.paymentDetails?.totalRentAmount || existingInvoice.totalAmount || 0);
+    const newLifecycleTotal = Number((previousLifecycleTotal + eventTotal).toFixed(2));
+    const paidSoFarTotal = Number((newPaidAmount + newAdvance).toFixed(2)); // advance (remaining) is not paid; subtract from total to get outstanding
+    const newOutstandingAmount = Math.max(0, Number((newLifecycleTotal - (newPaidAmount + newAdvance)).toFixed(2)));
 
     try {
       console.log('Advance/Payout DEBUG:', {
@@ -351,16 +375,16 @@ export const updateRentalInvoice = async (req, res) => {
         collectedNow,
         alreadyPaid,
         newPaidAmount,
-        fullAmount: baseTotal,
+        fullAmount: newLifecycleTotal,
         damageCharges,
-        appliedFromCashToPartial,
+        appliedFromCashToEvent,
         appliedFromAdvance,
         outstanding: newOutstandingAmount
       });
       console.log('--- SUMMARY ---', {
         advance: originalAdvance,
-        partialAmount: Number(partialTotal.toFixed(2)),
-        fullAmount: currentInvoiceTotal,
+        partialAmount: Number(eventTotal.toFixed(2)),
+        fullAmount: newLifecycleTotal,
         outstanding: newOutstandingAmount,
         remainingAdvance: newAdvance,
         collectedNow
@@ -368,12 +392,12 @@ export const updateRentalInvoice = async (req, res) => {
     } catch {}
 
     // Append partial history if PARTIAL and we have returned items
-    if (req.body.invoiceType === 'PARTIAL' && returnedItemsForHistory.length > 0) {
+    if (req.body.invoiceType === 'PARTIAL' && (returnedItemsForHistory.length > 0 || extensionSubtotal > 0)) {
       const historyEntry = {
         returnDate: entryDate,
         returnedItems: returnedItemsForHistory,
         partialPayment: collectedNow,
-        notes: req.body.notes || 'Partial return recorded'
+        notes: req.body.notes || (extensionSubtotal > 0 ? `Partial return recorded with extension charges ₹${Number(extensionSubtotal.toFixed(2))}` : 'Partial return recorded')
       };
       updatedPartialHistory = [...updatedPartialHistory, historyEntry];
     }
@@ -397,13 +421,13 @@ export const updateRentalInvoice = async (req, res) => {
         ...existingInvoice.paymentDetails,
         damageCharges: damageCharges,
         // Keep totalRentAmount as is; this is lifecycle total
-        totalRentAmount: existingInvoice.paymentDetails?.totalRentAmount || existingInvoice.totalAmount || 0,
+        totalRentAmount: newLifecycleTotal,
         // Advance reduced by partial event first
         advanceAmount: newAdvance,
         // Paid increases by what we collected now (beyond advance)
         paidAmount: newPaidAmount,
         outstandingAmount: newOutstandingAmount,
-        finalAmount: existingInvoice.paymentDetails?.finalAmount || existingInvoice.totalAmount || 0
+        finalAmount: newLifecycleTotal
       },
       // Update rental status based on invoice type
       rentalDetails: {
@@ -451,15 +475,15 @@ export const updateRentalInvoice = async (req, res) => {
 
     // Partial totals (derived for this event)
     const partialTotals = {
-      subtotal: Number(partialSubtotal.toFixed(2)),
+      subtotal: Number(eventSubtotal.toFixed(2)),
       cgstRate: parseFloat(existingInvoice.cgstRate || 0),
       sgstRate: parseFloat(existingInvoice.sgstRate || 0),
       ugstRate: parseFloat(existingInvoice.ugstRate || 0),
       igstRate: parseFloat(existingInvoice.igstRate || 0),
-      taxAmount: Number((partialTotal - partialSubtotal).toFixed(2)),
-      total: Number(partialTotal.toFixed(2)),
-      usedAdvance: Number(((originalAdvance - (updateData.paymentDetails.advanceAmount || 0)) || 0).toFixed(2)),
-      collectedNow: Number((newPaidAmount - alreadyPaid).toFixed(2)),
+      taxAmount: Number((eventTax).toFixed(2)),
+      total: Number(eventTotal.toFixed(2)),
+      usedAdvance: Number(((appliedFromAdvance) || 0).toFixed(2)),
+      collectedNow: Number((collectedNow).toFixed(2)),
       remainingAdvance: Number((updateData.paymentDetails.advanceAmount || 0).toFixed(2)),
       outstandingAmount: updateData.paymentDetails.outstandingAmount
     };

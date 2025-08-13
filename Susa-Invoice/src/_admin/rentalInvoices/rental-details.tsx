@@ -10,6 +10,7 @@ import RentalActions from "./rental-actions"
 import type { RentalInvoiceData, CompanyDetails } from "./rental-types"
 import logo from "../../assets/logo1.jpeg"
 import stamp from "../../assets/stamp.png"
+import { daysBetween, addDays } from "./date-utils"
 
 export default function RentalDetails() {
   const navigate = useNavigate()
@@ -21,12 +22,12 @@ export default function RentalDetails() {
   const [currentPDFType, setCurrentPDFType] = useState<'TAX' | 'PROFORMA' | null>(null)
 
   const [companyDetails] = useState<CompanyDetails>({
-    name: "SUSAKGJYO BUSINESS PVT. LTD",
-    address: "1404, DLF CORPORATE GREEN, SECTOR 74 - A, GURGAON, HARYANA -122004 (INDIA)",
-    gstin: "06AAYCS5019E1Z3",
-    pan: "AAYCS5019E",
-    phone: "+91-8595591496, 0124-4147286 ",
-    email: "Contact@susalabs.com",
+    name: "MAHIPAL SINGH TIMBER",
+    address: "PLOT NO-25, GALI NO-E8, NEAR JAGAR CHOWK, RAM COLONY,, Faridabad, Faridabad, Haryana, 121004",
+    gstin: ": 06BROPG0987J3ZA",
+    // pan: "AAYCS5019E",
+    phone: "+91 87000 77386",
+    email: "Garvsingh1619@gmail.com",
     logo: logo,
     stamp: stamp,
   })
@@ -119,7 +120,15 @@ export default function RentalDetails() {
         const pageHeightMm = 297
         const drawHeightMm = pageHeightMm - marginMm * 2
         const prhEl = element.querySelector('#partial-return-history') as HTMLElement | null
+        const fssEl = element.querySelector('#full-settlement-summary') as HTMLElement | null
+        const thanksEl = element.querySelector('#thank-you-note') as HTMLElement | null
         let spacerEl: HTMLDivElement | null = null
+        let spacerEl2: HTMLDivElement | null = null
+        // Hide thank-you during PDF, we'll add footer via jsPDF if needed
+        const originalThanksDisplay = thanksEl ? thanksEl.style.display : ''
+        if (thanksEl) {
+          thanksEl.style.display = 'none'
+        }
         if (prhEl) {
           const pxPerMmScreen = element.clientWidth / usableWidthMm
           const pageSliceHeightPxScreen = Math.floor(pxPerMmScreen * drawHeightMm)
@@ -146,15 +155,44 @@ export default function RentalDetails() {
             prhEl.parentElement?.insertBefore(spacerEl, prhEl)
           }
         }
+        // Prevent Full Settlement Summary block from splitting across pages: if it doesn't fit remainder, push to next page
+        if (fssEl) {
+          const pxPerMmScreen = element.clientWidth / usableWidthMm
+          const pageSliceHeightPxScreen = Math.floor(pxPerMmScreen * drawHeightMm)
+          const containerTop = element.getBoundingClientRect().top
+          const rect = fssEl.getBoundingClientRect()
+          const offsetY = Math.max(0, Math.round(rect.top - containerTop))
+          const elHeight = Math.round(rect.height)
+          const usedOnPage = offsetY % pageSliceHeightPxScreen
+          const remainingOnPage = pageSliceHeightPxScreen - usedOnPage
+          let spacerHeight2 = 0
+          if (elHeight > remainingOnPage) {
+            spacerHeight2 = remainingOnPage
+          }
+          if (spacerHeight2 > 0) {
+            spacerEl2 = document.createElement('div')
+            spacerEl2.setAttribute('data-fss-spacer', 'true')
+            spacerEl2.style.height = `${spacerHeight2}px`
+            spacerEl2.style.width = '100%'
+            spacerEl2.style.display = 'block'
+            fssEl.parentElement?.insertBefore(spacerEl2, fssEl)
+          }
+        }
         const canvas = await html2canvas.default(element, {
           scale: 2,
           useCORS: true,
           allowTaint: true,
           backgroundColor: '#ffffff'
         })
-        // Remove PRH spacer if added
+        // Remove spacers and restore thank-you visibility if added
         if (spacerEl && spacerEl.parentElement) {
           spacerEl.parentElement.removeChild(spacerEl)
+        }
+        if (spacerEl2 && spacerEl2.parentElement) {
+          spacerEl2.parentElement.removeChild(spacerEl2)
+        }
+        if (thanksEl) {
+          thanksEl.style.display = originalThanksDisplay
         }
         // Slice-based pagination to avoid any overlap/duplication
         const pageWidth = 210
@@ -333,7 +371,7 @@ export default function RentalDetails() {
         >
           {currentPDFType === 'TAX' ? "TAX INVOICE" : 
            currentPDFType === 'PROFORMA' ? "PROFORMA INVOICE" : 
-           `${getInvoiceTypeFromData(invoiceData).toUpperCase()} RENTAL INVOICE`}
+           (getInvoiceTypeFromData(invoiceData) === 'FULL' ? 'FINAL SETTLEMENT INVOICE' : `${getInvoiceTypeFromData(invoiceData).toUpperCase()} RENTAL INVOICE`)}
         </div>
 
         <RentalHeader
@@ -404,9 +442,169 @@ export default function RentalDetails() {
           </div>
         )}
 
-        {/* Activity Timeline removed as per request */}
+        {/* Unified Rental Activity Timeline (FULL invoices) */}
+        {getInvoiceTypeFromData(invoiceData) === 'FULL' && (
+          <div style={{ backgroundColor: '#eef2ff', padding: 20, borderRadius: 8, marginTop: 16, border: '2px solid #c7d2fe' }}>
+            <h3 style={{ fontWeight: 'bold', marginBottom: 12, color: '#1e3a8a', fontSize: 18 }}>Rental Activity Timeline</h3>
+            {(() => {
+              type Remaining = { qty: number; start?: string; end?: string; rate: number }
+              type ReturnEv = { date: string; qty: number; amount?: number }
+              const byProduct = new Map<string, Remaining>()
+              const segsByProduct = new Map<string, Remaining[]>()
+              const earliestStartByProduct = new Map<string, string>()
+              const earliestQtyByProduct = new Map<string, number>()
+              // Aggregate multiple lines per product to avoid inflation from extensions/splits
+              ;(invoiceData.items || []).forEach((it: any) => {
+                const name = it.productName || '-'
+                const qty = typeof it.rentedQuantity === 'string' ? parseFloat(it.rentedQuantity) || 0 : (it.rentedQuantity || 0)
+                const rate = typeof it.dailyRate === 'string' ? parseFloat(it.dailyRate) || 0 : (it.dailyRate || 0)
+                const prev = byProduct.get(name)
+                if (!prev) {
+                  byProduct.set(name, { qty, start: it.startDate, end: it.endDate, rate })
+                  segsByProduct.set(name, [{ qty, start: it.startDate, end: it.endDate, rate }])
+                  if (it.startDate) {
+                    earliestStartByProduct.set(name, it.startDate)
+                    earliestQtyByProduct.set(name, qty)
+                  }
+                } else {
+                  // keep earliest start, latest end, and maximum qty seen
+                  const earliestStart = prev.start && it.startDate ? (new Date(it.startDate) < new Date(prev.start) ? it.startDate : prev.start) : (prev.start || it.startDate)
+                  const latestEnd = prev.end && it.endDate ? (new Date(it.endDate) > new Date(prev.end) ? it.endDate : prev.end) : (prev.end || it.endDate)
+                  byProduct.set(name, { qty: Math.max(prev.qty || 0, qty || 0), start: earliestStart, end: latestEnd, rate: prev.rate || rate })
+                  const arr = segsByProduct.get(name) || []
+                  arr.push({ qty, start: it.startDate, end: it.endDate, rate })
+                  segsByProduct.set(name, arr)
+                  // track earliest issuance qty by earliest start
+                  const curEarliest = earliestStartByProduct.get(name)
+                  if (!curEarliest || (it.startDate && new Date(it.startDate) < new Date(curEarliest))) {
+                    if (it.startDate) {
+                      earliestStartByProduct.set(name, it.startDate)
+                      earliestQtyByProduct.set(name, qty)
+                    }
+                  }
+                }
+              })
+              const returnsMap = new Map<string, ReturnEv[]>()
+              const lastReturnMap = new Map<string, string>()
+              const headerDate = (invoiceData as any).Date || (invoiceData as any).createdAt || ''
+              ;((invoiceData as any).partialReturnHistory || []).forEach((entry: any) => {
+                const retDate = entry.returnDate || entry.createdAt || headerDate
+                if (Array.isArray(entry.returnedItems)) {
+                  entry.returnedItems.forEach((ri: any) => {
+                    const name = ri.productName || '-'
+                    const qty = typeof ri.returnedQuantity === 'string' ? parseFloat(ri.returnedQuantity) || 0 : (ri.returnedQuantity || 0)
+                    const amt = typeof ri.partialAmount === 'string' ? parseFloat(ri.partialAmount) || 0 : (ri.partialAmount || 0)
+                    const arr = returnsMap.get(name) || []
+                    arr.push({ date: retDate, qty, amount: amt })
+                    returnsMap.set(name, arr)
+                    if (!lastReturnMap.has(name) || new Date(retDate) > new Date(lastReturnMap.get(name)!)) {
+                      lastReturnMap.set(name, retDate)
+                    }
+                  })
+                }
+              })
+              const productNames = Array.from(new Set<string>([...byProduct.keys(), ...returnsMap.keys()]))
+              if (!productNames.length) {
+                return <div style={{ fontSize: 12, color: '#6b7280' }}>No activity available.</div>
+              }
+              return (
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                    <thead>
+                      <tr style={{ backgroundColor: '#e0e7ff' }}>
+                        <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #c7d2fe' }}>Event</th>
+                        <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #c7d2fe' }}>Product</th>
+                        <th style={{ textAlign: 'right', padding: 8, borderBottom: '1px solid #c7d2fe' }}>Qty</th>
+                        <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #c7d2fe' }}>Date / Period</th>
+                        <th style={{ textAlign: 'right', padding: 8, borderBottom: '1px solid #c7d2fe' }}>Days</th>
+                        <th style={{ textAlign: 'right', padding: 8, borderBottom: '1px solid #c7d2fe' }}>Amount (₹)</th>
+                        <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #c7d2fe' }}>Notes</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {productNames.map((name) => {
+                        const rem = byProduct.get(name)
+                        const retArr = (returnsMap.get(name) || []).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+                        // Issued should reflect the earliest issuance quantity (avoid extension inflation)
+                        const issuedQty = earliestQtyByProduct.get(name) ?? (rem?.qty || 0)
+                        const rows: any[] = []
+                        // Issued row (just an event, no amount)
+                        rows.push({
+                          kind: 'ISSUED',
+                          qty: issuedQty,
+                          dateText: (() => {
+                            const est = earliestStartByProduct.get(name)
+                            if (est) return new Date(est).toLocaleDateString('en-GB')
+                            return rem?.start ? new Date(rem.start).toLocaleDateString('en-GB') : (headerDate ? new Date(headerDate).toLocaleDateString('en-GB') : '-')
+                          })(),
+                          days: '-',
+                          amount: '-',
+                          notes: 'Issued'
+                        })
+                        // Partial returns
+                        retArr.forEach((ev) => {
+                          const startForReturned = earliestStartByProduct.get(name) || rem?.start
+                          const daysRet = startForReturned ? daysBetween(startForReturned, ev.date) : 0
+                          rows.push({
+                            kind: 'PARTIAL_RETURN',
+                            qty: ev.qty,
+                            dateText: new Date(ev.date).toLocaleDateString('en-GB'),
+                            days: daysRet || '-',
+                            amount: (ev.amount || 0) > 0 ? `₹${(ev.amount || 0).toLocaleString()}` : '-',
+                            notes: 'Partial return'
+                          })
+                        })
+                        // Remaining accrual per item segment to reflect extensions distinctly
+                        const segs = segsByProduct.get(name) || (rem ? [rem] : [])
+                        if (segs.length) {
+                          const lastReturn = lastReturnMap.get(name)
+                          const dayAfter = lastReturn ? addDays(lastReturn, 1) : ''
+                          segs.forEach((seg) => {
+                            let accrualStart = seg.start || dayAfter || ''
+                            if (seg.start && dayAfter) {
+                              accrualStart = new Date(dayAfter) > new Date(seg.start) ? dayAfter : seg.start
+                            } else if (dayAfter) {
+                              accrualStart = dayAfter
+                            }
+                            const accrualEnd = seg.end || ''
+                            const daysRemain = accrualStart && accrualEnd ? daysBetween(accrualStart, accrualEnd) : 0
+                            const remainAmt = (seg.qty || 0) * (seg.rate || 0) * (daysRemain || 0)
+                            rows.push({
+                              kind: 'REMAINING',
+                              qty: seg.qty,
+                              dateText: (accrualStart ? new Date(accrualStart).toLocaleDateString('en-GB') : '-') + ' → ' + (accrualEnd ? new Date(accrualEnd).toLocaleDateString('en-GB') : '-'),
+                              days: daysRemain || '-',
+                              amount: `₹${(remainAmt || 0).toLocaleString()}`,
+                              notes: 'Remaining accrual'
+                            })
+                          })
+                        }
+                        return (
+                          rows.map((r, idx) => (
+                            <tr key={`${name}-${idx}`}>
+                              <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{r.kind.replace('_', ' ')}</td>
+                              <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{name}</td>
+                              <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', textAlign: 'right' }}>{r.qty}</td>
+                              <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{r.dateText}</td>
+                              <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', textAlign: 'right' }}>{r.days}</td>
+                              <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', textAlign: 'right' }}>{r.amount}</td>
+                              <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{r.notes}</td>
+                            </tr>
+                          ))
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            })()}
+          </div>
+        )}
 
-        {/* Logs Console */}
+        {/* Legacy Logs section: removed for FULL invoices (timeline replaces); logs below are conditioned */}
+
+        {/* Logs Console (hide for FULL; timeline replaces it) */}
+        {getInvoiceTypeFromData(invoiceData) !== 'FULL' && (
         <div id="logs-console" style={{
           backgroundColor: '#f9fafb',
           padding: '20px',
@@ -530,10 +728,11 @@ export default function RentalDetails() {
             )
           })()}
         </div>
+        )}
 
         {/* Full Settlement Payment Summary (Read-only) */}
         {getInvoiceTypeFromData(invoiceData) === 'FULL' && (
-          <div style={{ 
+          <div id="full-settlement-summary" style={{ 
             backgroundColor: '#f0f9ff', 
             padding: '20px', 
             borderRadius: '8px', 

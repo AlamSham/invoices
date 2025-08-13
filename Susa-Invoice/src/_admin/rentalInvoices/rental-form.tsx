@@ -23,6 +23,22 @@ export default function RentalForm({
   invoiceType = 'ADVANCE',
 }: RentalFormProps) {
 
+  // Helpers for date math and formatting
+  const ymd = (d: Date) => d.toISOString().split('T')[0]
+  const addDays = (dateStr?: string, days: number = 1): string | '' => {
+    if (!dateStr) return ''
+    const d = new Date(dateStr)
+    d.setDate(d.getDate() + days)
+    return ymd(d)
+  }
+  const daysBetween = (start?: string, end?: string): number => {
+    if (!start || !end) return 0
+    const s = new Date(start)
+    const e = new Date(end)
+    const diff = Math.ceil(Math.abs(e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)) + 1
+    return Math.max(0, diff)
+  }
+
   const addItem = () => {
     const newItem = {
       productName: "",
@@ -55,7 +71,8 @@ export default function RentalForm({
     newItems[index] = { ...newItems[index], [field]: value }
     
     
-    // Auto-calculate rent amount when quantity, rate, days, or partial return changes
+    // Auto-calculate rent amount when quantity, rate, days change.
+    // In PARTIAL mode, do NOT mutate rentAmount/amount when editing returnedQuantity/partialReturnDate; previews handle that.
     if (field === 'rentedQuantity' || field === 'dailyRate' || field === 'totalDays' || field === 'returnedQuantity' || field === 'partialReturnDate') {
       const item = newItems[index]
       
@@ -82,28 +99,40 @@ export default function RentalForm({
           ? parseFloat(item.dailyRate) || 0 
           : item.dailyRate || 0
         
-        // Calculate days for returned items (from start to partial return date or current date)
+        // Calculate days for returned items (from start to partial return date, inclusive)
         let returnedDays = 0
-        if (item.startDate) {
-          const start = new Date(item.startDate)
-          // Use partial return date if available, otherwise use current date
-          const returnDate = item.partialReturnDate ? new Date(item.partialReturnDate) : new Date()
-          const diffTime = Math.abs(returnDate.getTime() - start.getTime())
-          returnedDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1
+        if (returnedQty > 0 && item.startDate) {
+          const startStr = item.startDate
+          const returnStr = item.partialReturnDate || ymd(new Date())
+          returnedDays = daysBetween(startStr, returnStr)
+        }
+
+        // Calculate days for remaining items
+        // Remaining accrues from the day AFTER partialReturnDate up to the new end date (inclusive)
+        let remainingDays = 0
+        if (remainingQty > 0) {
+          if (item.endDate) {
+            const accrualStart = item.partialReturnDate ? addDays(item.partialReturnDate, 1) : (item.startDate || '')
+            const accrualEnd = item.endDate
+            if (accrualStart && accrualEnd) {
+              const s = new Date(accrualStart as string)
+              const e = new Date(accrualEnd)
+              // If accrual starts on or after end date, no remaining days accrue
+              if (s >= e) {
+                remainingDays = 0
+              } else {
+                remainingDays = daysBetween(accrualStart as string, accrualEnd)
+              }
+            }
+          } else if (!item.partialReturnDate && item.startDate && item.endDate) {
+            // Fallback: no partial return, use full period
+            remainingDays = daysBetween(item.startDate, item.endDate)
+          }
         }
         
-        // Calculate days for remaining items (from start to original end date)
-        let totalDays = 0
-        if (item.startDate && item.endDate) {
-          const start = new Date(item.startDate)
-          const end = new Date(item.endDate)
-          const diffTime = Math.abs(end.getTime() - start.getTime())
-          totalDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1
-        }
-        
-        // Calculate rent: returned items pay for partial period, remaining items pay for full period
+        // Calculate rent: returned items pay for partial period, remaining items pay for remaining period only
         const returnedItemsRent = returnedQty * rate * returnedDays
-        const remainingItemsRent = remainingQty * rate * totalDays
+        const remainingItemsRent = remainingQty * rate * remainingDays
         
         calculatedRent = returnedItemsRent + remainingItemsRent
         
@@ -125,11 +154,14 @@ export default function RentalForm({
         calculatedRent = quantity * rate * days
       }
       
-      // Only update calculation fields, preserve all other fields
-      newItems[index] = {
-        ...newItems[index], // Keep all existing fields
-        rentAmount: calculatedRent,
-        amount: calculatedRent
+      // Only update calculation fields where appropriate
+      const shouldSkipAssign = invoiceType === 'PARTIAL' && (field === 'returnedQuantity' || field === 'partialReturnDate')
+      if (!shouldSkipAssign) {
+        newItems[index] = {
+          ...newItems[index],
+          rentAmount: calculatedRent,
+          amount: calculatedRent
+        }
       }
     }
     
@@ -504,122 +536,234 @@ export default function RentalForm({
             </thead>
             <tbody>
               {invoiceData.items.map((item, index) => (
-                <tr key={index}>
-                  <td style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "center", fontSize: "11px" }}>
-                    {index + 1}
-                  </td>
-                  <td style={{ border: "1px solid #d1d5db", padding: "8px", fontSize: "12px" }}>
-                    {isEditingMode ? (
-                      <input
-                        type="text"
-                        value={item.productName}
-                        onChange={(e) => updateItem(index, "productName", e.target.value)}
-                        style={{
-                          border: "none",
-                          width: "100%",
-                          fontSize: "12px",
-                          padding: "4px",
-                        }}
-                      />
-                    ) : (
-                      <div>
-                        <div style={{ fontWeight: "500" }}>{item.productName}</div>
-                        {/* Show returned quantity only for partial-return and full-settlement */}
-                        {(invoiceType === 'PARTIAL' || invoiceType === 'FULL') && item.returnedQuantity && (typeof item.returnedQuantity === 'string' ? parseFloat(item.returnedQuantity) : item.returnedQuantity) > 0 && (
-                          <div style={{ fontSize: "10px", color: "#dc2626" }}>
-                            Returned: {item.returnedQuantity}
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </td>
-                  <td style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "center", fontSize: "11px" }}>
-                    {isEditingMode ? (
-                      <input
-                        type="number"
-                        min="0"
-                        value={item.rentedQuantity || item.duration}
-                        onChange={(e) => updateItem(index, "rentedQuantity", parseInt(e.target.value) || 0)}
-                        style={{
-                          border: "none",
-                          width: "60px",
-                          textAlign: "center",
-                          fontSize: "12px",
-                        }}
-                      />
-                    ) : (
-                      <div>
-                        {item.rentedQuantity || item.duration}
-                        {item.returnedQuantity && (typeof item.returnedQuantity === 'string' ? parseFloat(item.returnedQuantity) : item.returnedQuantity) > 0 && (
-                          <div style={{ fontSize: "10px", color: "#6b7280" }}>(-{item.returnedQuantity})</div>
-                        )}
-                      </div>
-                    )}
-                  </td>
-                  <td style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "center", fontSize: "11px" }}>
-                    {isEditingMode ? (
-                      <input
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        value={item.dailyRate || 0}
-                        onChange={(e) => updateItem(index, "dailyRate", parseFloat(e.target.value) || 0)}
-                        style={{
-                          border: "none",
-                          width: "80px",
-                          textAlign: "center",
-                          fontSize: "12px",
-                        }}
-                      />
-                    ) : (
-                      `₹${item.dailyRate || 0}`
-                    )}
-                  </td>
-                  <td style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "center", fontSize: "11px" }}>
-                    {isEditingMode ? (
-                      <input
-                        type="date"
-                        defaultValue={item.startDate || ""}
-                        onBlur={(e) => {
-                          const newValue = e.target.value
-                          if (newValue !== item.startDate) {
-                            updateItem(index, "startDate", newValue)
-                            // Auto-calculate days if both dates are set
-                            if (item.endDate && newValue) {
-                              const start = new Date(newValue)
-                              const end = new Date(item.endDate)
-                              const diffTime = Math.abs(end.getTime() - start.getTime())
-                              const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1
-                              updateItem(index, "totalDays", diffDays)
+                <>
+                  <tr key={index}>
+                    <td style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "center", fontSize: "11px" }}>
+                      {index + 1}
+                    </td>
+                    <td style={{ border: "1px solid #d1d5db", padding: "8px", fontSize: "12px" }}>
+                      {isEditingMode ? (
+                        <input
+                          type="text"
+                          value={item.productName}
+                          onChange={(e) => updateItem(index, "productName", e.target.value)}
+                          style={{
+                            border: "none",
+                            width: "100%",
+                            fontSize: "12px",
+                            padding: "4px",
+                          }}
+                        />
+                      ) : (
+                        <div>
+                          <div style={{ fontWeight: "500" }}>{item.productName}</div>
+                          {/* Show returned quantity badge only for PARTIAL invoices */}
+                          {(invoiceType === 'PARTIAL') && item.returnedQuantity && (typeof item.returnedQuantity === 'string' ? parseFloat(item.returnedQuantity) : item.returnedQuantity) > 0 && (
+                            <div style={{ fontSize: "10px", color: "#dc2626" }}>
+                              Returned: {item.returnedQuantity}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "center", fontSize: "11px" }}>
+                      {isEditingMode ? (
+                        <input
+                          type="number"
+                          min="0"
+                          value={item.rentedQuantity || item.duration}
+                          onChange={(e) => updateItem(index, "rentedQuantity", parseInt(e.target.value) || 0)}
+                          style={{
+                            border: "none",
+                            width: "60px",
+                            textAlign: "center",
+                            fontSize: "12px",
+                          }}
+                        />
+                      ) : (
+                        <div>
+                          {item.rentedQuantity || item.duration}
+                          {/* Show (-x) returned badge only for PARTIAL invoices */}
+                          {invoiceType === 'PARTIAL' && item.returnedQuantity && (typeof item.returnedQuantity === 'string' ? parseFloat(item.returnedQuantity) : item.returnedQuantity) > 0 && (
+                            <div style={{ fontSize: "10px", color: "#6b7280" }}>(-{item.returnedQuantity})</div>
+                          )}
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "center", fontSize: "11px" }}>
+                      {isEditingMode ? (
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={item.dailyRate || 0}
+                          onChange={(e) => updateItem(index, "dailyRate", parseFloat(e.target.value) || 0)}
+                          style={{
+                            border: "none",
+                            width: "80px",
+                            textAlign: "center",
+                            fontSize: "12px",
+                          }}
+                        />
+                      ) : (
+                        `₹${item.dailyRate || 0}`
+                      )}
+                    </td>
+                    <td style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "center", fontSize: "11px" }}>
+                      {isEditingMode ? (
+                        <input
+                          type="date"
+                          defaultValue={item.startDate || ""}
+                          onBlur={(e) => {
+                            const newValue = e.target.value
+                            if (newValue !== item.startDate) {
+                              updateItem(index, "startDate", newValue)
+                              // Auto-calculate days if both dates are set
+                              if (item.endDate && newValue) {
+                                if (invoiceType === 'FULL') {
+                                  // FULL: days from max(startDate, day after last partial return)
+                                  const history: any[] = ((invoiceData as any).partialReturnHistory || [])
+                                  let lastReturnDate: string | undefined
+                                  history.forEach((entry: any) => {
+                                    const retDate = entry.returnDate || entry.createdAt
+                                    ;(entry.returnedItems || []).forEach((ri: any) => {
+                                      if ((ri.productName || '-') === (item.productName || '-')) {
+                                        const q = typeof ri.returnedQuantity === 'string' ? parseFloat(ri.returnedQuantity) || 0 : (ri.returnedQuantity || 0)
+                                        if (q > 0 && retDate) {
+                                          if (!lastReturnDate || new Date(retDate) > new Date(lastReturnDate)) lastReturnDate = retDate
+                                        }
+                                      }
+                                    })
+                                  })
+                                  const dayAfter = lastReturnDate ? addDays(lastReturnDate, 1) : ''
+                                  const rawStart = newValue
+                                  let accruesFrom = rawStart || dayAfter
+                                  if (rawStart && dayAfter) {
+                                    accruesFrom = new Date(dayAfter) > new Date(rawStart) ? dayAfter : rawStart
+                                  } else if (dayAfter) {
+                                    accruesFrom = dayAfter
+                                  }
+                                  const diffDays = daysBetween(accruesFrom, item.endDate)
+                                  // Update totalDays and dependent rent/amount
+                                  const newItems = [...invoiceData.items]
+                                  const quantity = typeof newItems[index].rentedQuantity === 'string'
+                                    ? parseFloat(newItems[index].rentedQuantity) || 0
+                                    : newItems[index].rentedQuantity || 0
+                                  const rate = typeof newItems[index].dailyRate === 'string'
+                                    ? parseFloat(newItems[index].dailyRate) || 0
+                                    : newItems[index].dailyRate || 0
+                                  const calcRent = quantity * rate * (diffDays || 0)
+                                  newItems[index] = {
+                                    ...newItems[index],
+                                    totalDays: diffDays,
+                                    rentAmount: calcRent,
+                                    amount: calcRent,
+                                  }
+                                  updateInvoiceData('items', newItems)
+                                } else {
+                                  const start = new Date(newValue)
+                                  const end = new Date(item.endDate)
+                                  const diffTime = Math.abs(end.getTime() - start.getTime())
+                                  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1
+                                  // Update totalDays and dependent rent/amount
+                                  const newItems = [...invoiceData.items]
+                                  const quantity = typeof newItems[index].rentedQuantity === 'string'
+                                    ? parseFloat(newItems[index].rentedQuantity) || 0
+                                    : newItems[index].rentedQuantity || 0
+                                  const rate = typeof newItems[index].dailyRate === 'string'
+                                    ? parseFloat(newItems[index].dailyRate) || 0
+                                    : newItems[index].dailyRate || 0
+                                  const calcRent = quantity * rate * (diffDays || 0)
+                                  newItems[index] = {
+                                    ...newItems[index],
+                                    totalDays: diffDays,
+                                    rentAmount: calcRent,
+                                    amount: calcRent,
+                                  }
+                                  updateInvoiceData('items', newItems)
+                                }
+                              }
+                              setTimeout(() => calculateAmounts(), 0)
                             }
-                            setTimeout(() => calculateAmounts(), 0)
-                          }
-                        }}
-                        onChange={(e) => {
-                          // Immediate update for better UX
-                          const newValue = e.target.value
-                          updateItem(index, "startDate", newValue)
-                          if (item.endDate && newValue) {
-                            const start = new Date(newValue)
-                            const end = new Date(item.endDate)
-                            const diffTime = Math.abs(end.getTime() - start.getTime())
-                            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1
-                            updateItem(index, "totalDays", diffDays)
-                          }
-                        }}
-                        style={{
-                          border: "none",
-                          width: "120px",
-                          textAlign: "center",
-                          fontSize: "11px",
-                          backgroundColor: "transparent",
-                          outline: "none"
-                        }}
-                      />
-                    ) : (
-                      item.startDate ? new Date(item.startDate).toLocaleDateString('en-GB') : "Not Set"
-                    )}
-                  </td>
+                          }}
+                          onChange={(e) => {
+                            const newValue = e.target.value
+                            updateItem(index, "startDate", newValue)
+                            if (item.endDate && newValue) {
+                              if (invoiceType === 'FULL') {
+                                const history: any[] = ((invoiceData as any).partialReturnHistory || [])
+                                let lastReturnDate: string | undefined
+                                history.forEach((entry: any) => {
+                                  const retDate = entry.returnDate || entry.createdAt
+                                  ;(entry.returnedItems || []).forEach((ri: any) => {
+                                    if ((ri.productName || '-') === (item.productName || '-')) {
+                                      const q = typeof ri.returnedQuantity === 'string' ? parseFloat(ri.returnedQuantity) || 0 : (ri.returnedQuantity || 0)
+                                      if (q > 0 && retDate) {
+                                        if (!lastReturnDate || new Date(retDate) > new Date(lastReturnDate)) lastReturnDate = retDate
+                                      }
+                                    }
+                                  })
+                                })
+                                const dayAfter = lastReturnDate ? addDays(lastReturnDate, 1) : ''
+                                const rawStart = newValue
+                                let accruesFrom = rawStart || dayAfter
+                                if (rawStart && dayAfter) {
+                                  accruesFrom = new Date(dayAfter) > new Date(rawStart) ? dayAfter : rawStart
+                                } else if (dayAfter) {
+                                  accruesFrom = dayAfter
+                                }
+                                const diffDays = daysBetween(accruesFrom, item.endDate)
+                                const newItems = [...invoiceData.items]
+                                const quantity = typeof newItems[index].rentedQuantity === 'string'
+                                  ? parseFloat(newItems[index].rentedQuantity) || 0
+                                  : newItems[index].rentedQuantity || 0
+                                const rate = typeof newItems[index].dailyRate === 'string'
+                                  ? parseFloat(newItems[index].dailyRate) || 0
+                                  : newItems[index].dailyRate || 0
+                                const calcRent = quantity * rate * (diffDays || 0)
+                                newItems[index] = {
+                                  ...newItems[index],
+                                  totalDays: diffDays,
+                                  rentAmount: calcRent,
+                                  amount: calcRent,
+                                }
+                                updateInvoiceData('items', newItems)
+                              } else {
+                                const start = new Date(newValue)
+                                const end = new Date(item.endDate)
+                                const diffTime = Math.abs(end.getTime() - start.getTime())
+                                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1
+                                const newItems = [...invoiceData.items]
+                                const quantity = typeof newItems[index].rentedQuantity === 'string'
+                                  ? parseFloat(newItems[index].rentedQuantity) || 0
+                                  : newItems[index].rentedQuantity || 0
+                                const rate = typeof newItems[index].dailyRate === 'string'
+                                  ? parseFloat(newItems[index].dailyRate) || 0
+                                  : newItems[index].dailyRate || 0
+                                const calcRent = quantity * rate * (diffDays || 0)
+                                newItems[index] = {
+                                  ...newItems[index],
+                                  totalDays: diffDays,
+                                  rentAmount: calcRent,
+                                  amount: calcRent,
+                                }
+                                updateInvoiceData('items', newItems)
+                              }
+                            }
+                          }}
+                          style={{
+                            border: "none",
+                            width: "120px",
+                            textAlign: "center",
+                            fontSize: "11px",
+                            backgroundColor: "transparent",
+                            outline: "none"
+                          }}
+                        />
+                      ) : (
+                        item.startDate ? new Date(item.startDate).toLocaleDateString('en-GB') : "Not Set"
+                      )}
+                    </td>
                   <td style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "center", fontSize: "11px" }}>
                     {invoiceType === 'PARTIAL' ? (
                       isEditingMode ? (
@@ -628,7 +772,6 @@ export default function RentalForm({
                           value={item.partialReturnDate || ""}
                           onChange={(e) => {
                             const newValue = e.target.value
-                            
                             // Calculate days if both dates are set
                             let calculatedDays = item.totalDays
                             if (item.startDate && newValue) {
@@ -637,7 +780,6 @@ export default function RentalForm({
                               const diffTime = Math.abs(end.getTime() - start.getTime())
                               calculatedDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1
                             }
-                            
                             // Update both fields in single operation to prevent UI delay
                             const newItems = [...invoiceData.items]
                             newItems[index] = {
@@ -645,7 +787,6 @@ export default function RentalForm({
                               partialReturnDate: newValue,
                               totalDays: calculatedDays
                             }
-                            
                             updateInvoiceData("items", newItems)
                             setTimeout(() => calculateAmounts(), 0)
                           }}
@@ -668,16 +809,39 @@ export default function RentalForm({
                           value={item.endDate || ""}
                           onChange={(e) => {
                             const newValue = e.target.value
-                            
                             // Calculate days if both dates are set
                             let calculatedDays = item.totalDays
                             if (item.startDate && newValue) {
-                              const start = new Date(item.startDate)
-                              const end = new Date(newValue)
-                              const diffTime = Math.abs(end.getTime() - start.getTime())
-                              calculatedDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1
+                              if (invoiceType === 'FULL') {
+                                const history: any[] = ((invoiceData as any).partialReturnHistory || [])
+                                let lastReturnDate: string | undefined
+                                history.forEach((entry: any) => {
+                                  const retDate = entry.returnDate || entry.createdAt
+                                  ;(entry.returnedItems || []).forEach((ri: any) => {
+                                    if ((ri.productName || '-') === (item.productName || '-')) {
+                                      const q = typeof ri.returnedQuantity === 'string' ? parseFloat(ri.returnedQuantity) || 0 : (ri.returnedQuantity || 0)
+                                      if (q > 0 && retDate) {
+                                        if (!lastReturnDate || new Date(retDate) > new Date(lastReturnDate)) lastReturnDate = retDate
+                                      }
+                                    }
+                                  })
+                                })
+                                const dayAfter = lastReturnDate ? addDays(lastReturnDate, 1) : ''
+                                const rawStart = item.startDate
+                                let accruesFrom = rawStart || dayAfter
+                                if (rawStart && dayAfter) {
+                                  accruesFrom = new Date(dayAfter) > new Date(rawStart) ? dayAfter : rawStart
+                                } else if (dayAfter) {
+                                  accruesFrom = dayAfter
+                                }
+                                calculatedDays = daysBetween(accruesFrom, newValue)
+                              } else {
+                                const start = new Date(item.startDate)
+                                const end = new Date(newValue)
+                                const diffTime = Math.abs(end.getTime() - start.getTime())
+                                calculatedDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1
+                              }
                             }
-                            
                             // Update both endDate and totalDays in one go
                             const newItems = [...invoiceData.items]
                             newItems[index] = {
@@ -685,7 +849,6 @@ export default function RentalForm({
                               endDate: newValue,
                               totalDays: calculatedDays
                             }
-                            
                             // Recalculate rent amount with new days
                             const quantity = typeof newItems[index].rentedQuantity === 'string' 
                               ? parseFloat(newItems[index].rentedQuantity) || 0 
@@ -696,12 +859,9 @@ export default function RentalForm({
                             const days = typeof calculatedDays === 'string' 
                               ? parseFloat(calculatedDays) || 1 
                               : calculatedDays || 1
-                            
                             const calculatedRent = quantity * rate * days
                             newItems[index].rentAmount = calculatedRent
                             newItems[index].amount = calculatedRent
-                            
-                            
                             updateInvoiceData("items", newItems)
                             setTimeout(() => calculateAmounts(), 0)
                           }}
@@ -800,6 +960,58 @@ export default function RentalForm({
                     </td>
                   )}
                 </tr>
+                {/* Summary sub-row for FULL settlement */}
+                {invoiceType === 'FULL' && (
+                  (() => {
+                    const productName = item.productName || '-'
+                    // Collect product-specific partial return events
+                    const events: { date: string; qty: number }[] = []
+                    let totalReturned = 0
+                    const history: any[] = ((invoiceData as any).partialReturnHistory || [])
+                    history.forEach((entry: any) => {
+                      const retDate = entry.returnDate || entry.createdAt
+                      if (Array.isArray(entry.returnedItems)) {
+                        entry.returnedItems.forEach((ri: any) => {
+                          if ((ri.productName || '-') === productName) {
+                            const q = typeof ri.returnedQuantity === 'string' ? parseFloat(ri.returnedQuantity) || 0 : (ri.returnedQuantity || 0)
+                            totalReturned += q
+                            if (q > 0 && retDate) events.push({ date: retDate, qty: q })
+                          }
+                        })
+                      }
+                    })
+                    // Sort events by date ascending
+                    events.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+                    const remainingQty = typeof item.rentedQuantity === 'string' ? parseFloat(item.rentedQuantity) || 0 : (item.rentedQuantity || 0)
+                    const issuedQty = remainingQty + totalReturned
+                    const lastReturnDate = events.length ? events[events.length - 1].date : undefined
+                    // Remaining accrues from max(startDate, day after last partial return)
+                    const dayAfterLastReturn = lastReturnDate ? addDays(lastReturnDate, 1) : ''
+                    const rawStart = item.startDate || ''
+                    let accruesFrom = rawStart || dayAfterLastReturn
+                    if (rawStart && dayAfterLastReturn) {
+                      accruesFrom = new Date(dayAfterLastReturn) > new Date(rawStart) ? dayAfterLastReturn : rawStart
+                    } else if (dayAfterLastReturn) {
+                      accruesFrom = dayAfterLastReturn
+                    }
+                    const accrualStartDisp = accruesFrom ? new Date(accruesFrom).toLocaleDateString('en-GB') : '-'
+                    const accrualEndDisp = item.endDate ? new Date(item.endDate).toLocaleDateString('en-GB') : '-'
+                    const remainingDays = (accruesFrom && item.endDate) ? daysBetween(accruesFrom, item.endDate) : 0
+                    return (
+                      <tr>
+                        <td colSpan={9} style={{ padding: '6px 8px', background: '#f9fafb', color: '#374151', fontSize: 11 }}>
+                          <div><strong style={{ color: '#111827' }}>{productName}</strong></div>
+                          <div>Issued: {issuedQty} {item.startDate ? `on ${new Date(item.startDate).toLocaleDateString('en-GB')}` : ''}</div>
+                          {events.map((ev, i) => (
+                            <div key={i} style={{ color: '#6b7280' }}>Returned: {ev.qty} on {new Date(ev.date).toLocaleDateString('en-GB')}</div>
+                          ))}
+                          <div>Remaining: {remainingQty} accrues {accrualStartDisp} → {accrualEndDisp} {remainingDays ? `(${remainingDays} days)` : ''}</div>
+                        </td>
+                      </tr>
+                    )
+                  })()
+                )}
+                </>
               ))}
             </tbody>
             
@@ -810,6 +1022,36 @@ export default function RentalForm({
                 <td style={{ border: "1px solid #d1d5db", padding: "8px", textAlign: "right", fontWeight: 500 }}>₹{(invoiceData.subtotal || 0).toFixed(2)}</td>
                 {isEditingMode && <td></td>}
               </tr>
+
+              {/* Preview Remaining Amount (PARTIAL mode) */}
+              {invoiceType === 'PARTIAL' && isEditingMode && (
+                (() => {
+                  const previewSum = (invoiceData.items || []).reduce((sum, item: any) => {
+                    const rentedQty = typeof item.rentedQuantity === 'string' ? parseFloat(item.rentedQuantity) || 0 : item.rentedQuantity || 0
+                    const originalReturned = typeof item.originalReturnedQuantity === 'string' ? parseFloat(item.originalReturnedQuantity) || 0 : (item.originalReturnedQuantity || 0)
+                    const retNow = typeof item.returnedQuantity === 'string' ? parseFloat(item.returnedQuantity) || 0 : item.returnedQuantity || 0
+                    const remaining = Math.max(0, rentedQty - originalReturned - retNow)
+                    if (retNow <= 0 || remaining <= 0) return sum
+                    const accruesFrom = item.partialReturnDate ? addDays(item.partialReturnDate, 1) : ''
+                    let previewDays = 0
+                    if ((accruesFrom || item.startDate) && item.endDate) {
+                      const s = new Date((accruesFrom || item.startDate) as string)
+                      const e = new Date(item.endDate)
+                      previewDays = s < e ? daysBetween((accruesFrom || item.startDate) as string, item.endDate) : 0
+                    }
+                    const rate = typeof item.dailyRate === 'string' ? parseFloat(item.dailyRate) || 0 : item.dailyRate || 0
+                    const previewAmount = Math.max(0, remaining) * Math.max(0, rate) * Math.max(0, previewDays)
+                    return sum + previewAmount
+                  }, 0)
+                  return (
+                    <tr style={{ backgroundColor: "#fff7ed" }}>
+                      <td colSpan={6} style={{ border: "1px solid #d1d5db", padding: "8px", textAlign: "right" }}>Preview Remaining Amount</td>
+                      <td style={{ border: "1px solid #d1d5db", padding: "8px", textAlign: "right", fontWeight: 600 }}>₹{previewSum.toFixed(2)}</td>
+                      {isEditingMode && <td></td>}
+                    </tr>
+                  )
+                })()
+              )}
 
               {/* Tax */}
               <tr style={{ backgroundColor: "#f9fafb" }}>
@@ -838,10 +1080,152 @@ export default function RentalForm({
                 <td style={{ border: "1px solid #d1d5db", padding: "8px", textAlign: "right" }}><strong>₹{(invoiceData.totalAmount || 0).toFixed(2)}</strong></td>
                 {isEditingMode && <td></td>}
               </tr>
+
+              {/* Estimated Total Including Preview (display-only) */}
+              {invoiceType === 'PARTIAL' && isEditingMode && (
+                (() => {
+                  const previewSum = (invoiceData.items || []).reduce((sum: number, item: any) => {
+                    const rentedQty = typeof item.rentedQuantity === 'string' ? parseFloat(item.rentedQuantity) || 0 : item.rentedQuantity || 0
+                    const originalReturned = typeof item.originalReturnedQuantity === 'string' ? parseFloat(item.originalReturnedQuantity) || 0 : (item.originalReturnedQuantity || 0)
+                    const retNow = typeof item.returnedQuantity === 'string' ? parseFloat(item.returnedQuantity) || 0 : item.returnedQuantity || 0
+                    const remaining = Math.max(0, rentedQty - originalReturned - retNow)
+                    if (retNow <= 0 || remaining <= 0) return sum
+                    const accruesFrom = item.partialReturnDate ? addDays(item.partialReturnDate, 1) : ''
+                    let previewDays = 0
+                    if ((accruesFrom || item.startDate) && item.endDate) {
+                      const s = new Date((accruesFrom || item.startDate) as string)
+                      const e = new Date(item.endDate)
+                      previewDays = s < e ? daysBetween((accruesFrom || item.startDate) as string, item.endDate) : 0
+                    }
+                    const rate = typeof item.dailyRate === 'string' ? parseFloat(item.dailyRate) || 0 : item.dailyRate || 0
+                    const previewAmount = Math.max(0, remaining) * Math.max(0, rate) * Math.max(0, previewDays)
+                    return sum + previewAmount
+                  }, 0)
+                  const estimatedSubtotal = (invoiceData.subtotal || 0) + previewSum
+                  const taxRateTotal = (invoiceData.cgstRate || 0) + (invoiceData.sgstRate || 0) + (invoiceData.ugstRate || 0) + (invoiceData.igstRate || 0)
+                  const estimatedTax = (estimatedSubtotal * taxRateTotal) / 100
+                  const estimatedTotal = estimatedSubtotal + estimatedTax
+                  return (
+                    <tr style={{ backgroundColor: "#ecfeff" }}>
+                      <td colSpan={6} style={{ border: "1px solid #d1d5db", padding: "8px", textAlign: "right" }}>Estimated Total (with preview)</td>
+                      <td style={{ border: "1px solid #d1d5db", padding: "8px", textAlign: "right", fontWeight: 700 }}>₹{estimatedTotal.toFixed(2)}</td>
+                      {isEditingMode && <td></td>}
+                    </tr>
+                  )
+                })()
+              )}
             </tfoot>
           </table>
         </div>
       </div>
+
+      {/* Remaining Items Pane (Interactive) - visible when doing PARTIAL returns */}
+      {invoiceType === 'PARTIAL' && isEditingMode && (
+        <div style={{ marginBottom: 16, padding: 12, border: '1px solid #e5e7eb', borderRadius: 8, background: '#fafafa' }}>
+          <div style={{ fontWeight: 'bold', marginBottom: 8 }}>Remaining Items (Set new end date and preview)</div>
+          {invoiceData.items.map((item, index) => {
+            const rentedQty = typeof item.rentedQuantity === 'string' ? parseFloat(item.rentedQuantity) || 0 : item.rentedQuantity || 0
+            const originalReturned = typeof (item as any).originalReturnedQuantity === 'string' ? parseFloat((item as any).originalReturnedQuantity) || 0 : ((item as any).originalReturnedQuantity || 0)
+            const retNow = typeof item.returnedQuantity === 'string' ? parseFloat(item.returnedQuantity) || 0 : item.returnedQuantity || 0
+            const remaining = Math.max(0, rentedQty - originalReturned - retNow)
+            if (retNow <= 0 || remaining <= 0) return null
+
+            const accruesFrom = item.partialReturnDate ? addDays(item.partialReturnDate, 1) : ''
+            let previewDays = 0
+            if ((accruesFrom || item.startDate) && item.endDate) {
+              const s = new Date((accruesFrom || item.startDate) as string)
+              const e = new Date(item.endDate)
+              previewDays = s < e ? daysBetween((accruesFrom || item.startDate) as string, item.endDate) : 0
+            }
+            const rate = typeof item.dailyRate === 'string' ? parseFloat(item.dailyRate) || 0 : item.dailyRate || 0
+            const previewAmount = Math.max(0, remaining) * Math.max(0, rate) * Math.max(0, previewDays)
+
+            return (
+              <div key={`remaining-${index}`} style={{ border: '1px dashed #d1d5db', borderRadius: 6, padding: 10, marginBottom: 10, background: '#ffffff' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr', gap: 8, alignItems: 'center' }}>
+                  <div>
+                    <div style={{ fontWeight: 600 }}>{item.productName || 'Item ' + (index + 1)}</div>
+                    <div style={{ fontSize: 12, color: '#6b7280' }}>Returned now: {retNow} | Remaining: {remaining}</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#6b7280' }}>Accrues From</div>
+                    <div style={{ fontWeight: 500 }}>{accruesFrom || '-'}</div>
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 12, color: '#374151', marginBottom: 4 }}>New End Date</label>
+                    <input
+                      type="date"
+                      value={item.endDate || ''}
+                      onChange={(e) => {
+                        const newValue = e.target.value
+                        updateItem(index, 'endDate', newValue)
+                      }}
+                      style={{ border: '1px solid #d1d5db', padding: 6, borderRadius: 4, width: 150 }}
+                    />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 12, color: '#6b7280' }}>Preview Days</div>
+                    <div style={{ fontWeight: 600 }}>{previewDays}</div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: 12, color: '#6b7280' }}>Preview Amount</div>
+                    <div style={{ fontWeight: 700 }}>₹{previewAmount.toFixed(2)}</div>
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+          <div style={{ fontSize: 12, color: '#6b7280', marginTop: 6 }}>
+            Note: This is only a preview. Final days and amount are computed by the server.
+          </div>
+        </div>
+      )}
+
+      {/* Final Accrual Details - disabled (use unified timeline / previews instead) */}
+      {false && (
+        <div style={{ 
+          backgroundColor: '#eef2ff',
+          padding: 12,
+          borderRadius: 8,
+          border: '1px solid #c7d2fe',
+          marginBottom: 16
+        }}>
+          <div style={{ fontWeight: 700, color: '#1e3a8a', marginBottom: 8 }}>Final Accrual Details</div>
+          {(invoiceData.items || []).map((item, idx) => {
+            const qty = typeof item.rentedQuantity === 'string' ? parseFloat(item.rentedQuantity) || 0 : item.rentedQuantity || 0
+            const start = item.startDate || ''
+            const end = item.endDate || ''
+            const days = start && end ? daysBetween(start, end) : 0
+            const amount = typeof item.amount === 'string' ? parseFloat(item.amount) || 0 : (item.amount || item.rentAmount || 0)
+            return (
+              <div key={`final-accrual-${idx}`} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 2fr 1fr 1fr', gap: 8, padding: '6px 8px', background: '#ffffff', borderRadius: 6, border: '1px solid #e5e7eb', marginBottom: 6 }}>
+                <div>
+                  <div style={{ fontWeight: 600 }}>{item.productName || `Item ${idx + 1}`}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: '#6b7280' }}>Qty</div>
+                  <div style={{ fontWeight: 600 }}>{qty}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: '#6b7280' }}>Period</div>
+                  <div style={{ fontWeight: 500 }}>{start ? new Date(start).toLocaleDateString('en-GB') : '-'} → {end ? new Date(end).toLocaleDateString('en-GB') : '-'}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 12, color: '#6b7280' }}>Days</div>
+                  <div style={{ fontWeight: 600 }}>{days}</div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: 12, color: '#6b7280' }}>Amount</div>
+                  <div style={{ fontWeight: 700 }}>₹{Number(amount).toFixed(2)}</div>
+                </div>
+              </div>
+            )
+          })}
+          <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>
+            This section shows the final accrual window for items that were pending after partial returns.
+          </div>
+        </div>
+      )}
 
       {/* Advance Amount Section - Clean placement after GST */}
       {invoiceType === 'ADVANCE' && (
@@ -962,15 +1346,47 @@ export default function RentalForm({
               </div>
             </div>
             <div>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontWeight: "bold", fontSize: "16px" }}>
-                <span>Remaining Outstanding:</span>
-                <span style={{ color: "#dc2626" }}>
-                  ₹{(Math.max(0, (invoiceData.totalAmount || 0) - ((parseFloat(String(invoiceData.paymentDetails?.advanceAmount || 0)) || 0) + (invoiceData.paymentDetails?.paidAmount || 0)))).toLocaleString()}
-                </span>
-              </div>
-              <div style={{ fontSize: "12px", color: "#6b7280", fontStyle: "italic", backgroundColor: "#f0fdf4", padding: "8px", borderRadius: "4px", border: "1px solid #34d399" }}>
-                 Outstanding amount updated based on partial returns and payments
-              </div>
+              {(() => {
+                // Compute outstanding. In PARTIAL edit mode, use estimated total (with preview) to match user's expectation.
+                let totalForOutstanding = invoiceData.totalAmount || 0
+                if (invoiceType === 'PARTIAL' && isEditingMode) {
+                  const previewSum = (invoiceData.items || []).reduce((sum: number, item: any) => {
+                    const rentedQty = typeof item.rentedQuantity === 'string' ? parseFloat(item.rentedQuantity) || 0 : item.rentedQuantity || 0
+                    const originalReturned = typeof item.originalReturnedQuantity === 'string' ? parseFloat(item.originalReturnedQuantity) || 0 : (item.originalReturnedQuantity || 0)
+                    const retNow = typeof item.returnedQuantity === 'string' ? parseFloat(item.returnedQuantity) || 0 : item.returnedQuantity || 0
+                    const remaining = Math.max(0, rentedQty - originalReturned - retNow)
+                    if (retNow <= 0 || remaining <= 0) return sum
+                    const accruesFrom = item.partialReturnDate ? addDays(item.partialReturnDate, 1) : ''
+                    let previewDays = 0
+                    if ((accruesFrom || item.startDate) && item.endDate) {
+                      const s = new Date((accruesFrom || item.startDate) as string)
+                      const e = new Date(item.endDate)
+                      previewDays = s < e ? daysBetween((accruesFrom || item.startDate) as string, item.endDate) : 0
+                    }
+                    const rate = typeof item.dailyRate === 'string' ? parseFloat(item.dailyRate) || 0 : item.dailyRate || 0
+                    const previewAmount = Math.max(0, remaining) * Math.max(0, rate) * Math.max(0, previewDays)
+                    return sum + previewAmount
+                  }, 0)
+                  const estimatedSubtotal = (invoiceData.subtotal || 0) + previewSum
+                  const taxRateTotal = (invoiceData.cgstRate || 0) + (invoiceData.sgstRate || 0) + (invoiceData.ugstRate || 0) + (invoiceData.igstRate || 0)
+                  const estimatedTax = (estimatedSubtotal * taxRateTotal) / 100
+                  const estimatedTotal = estimatedSubtotal + estimatedTax
+                  totalForOutstanding = estimatedTotal
+                }
+                const totalPaid = ((parseFloat(String(invoiceData.paymentDetails?.advanceAmount || 0)) || 0) + (invoiceData.paymentDetails?.paidAmount || 0))
+                const outstanding = Math.max(0, totalForOutstanding - totalPaid)
+                return (
+                  <>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontWeight: "bold", fontSize: "16px" }}>
+                      <span>Remaining Outstanding:</span>
+                      <span style={{ color: "#dc2626" }}>₹{outstanding.toFixed(2)}</span>
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#6b7280", fontStyle: "italic", backgroundColor: "#f0fdf4", padding: "8px", borderRadius: "4px", border: "1px solid #34d399" }}>
+                      Outstanding amount updated based on partial returns and payments
+                    </div>
+                  </>
+                )
+              })()}
             </div>
           </div>
         </div>
@@ -1048,7 +1464,7 @@ export default function RentalForm({
       </div>
 
       {/* Thank-you note */}
-      <div style={{ textAlign: "center", marginTop: 24, paddingTop: 16, borderTop: "1px solid #e5e7eb", color: "#2563eb" }}>
+      <div id="thank-you-note" style={{ textAlign: "center", marginTop: 24, paddingTop: 16, borderTop: "1px solid #e5e7eb", color: "#2563eb" }}>
         <p style={{ fontSize: 14, margin: 0 }}>
           Thank you for your business! 
           <Phone style={{ width: 12, height: 12, display: "inline", margin: "0 4px" }} />
@@ -1060,4 +1476,3 @@ export default function RentalForm({
     </div>
   )
 }
-
