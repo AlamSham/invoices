@@ -69,6 +69,11 @@ const generateNextInvoiceNumber = async () => {
 // CREATE New Invoice (Main function for all invoice types)
 export const createInvoice = async (req, res) => {
   try {
+    // Raw request logging for debugging
+    try {
+      console.log('>>> CREATE REQ PARAMS:', req.params || {});
+      console.log('>>> CREATE REQ BODY:', JSON.stringify(req.body));
+    } catch {}
    
     
     // Generate next invoice number
@@ -101,9 +106,22 @@ export const createInvoice = async (req, res) => {
     
     const newInvoice = new Invoice(invoiceData);
     const savedInvoice = await newInvoice.save();
-    
-    
-    
+    // Debug logs for ADVANCE or initial creation
+    try {
+      console.log('--- ADVANCE/CREATE DEBUG ---');
+      console.log('InvoiceNumber:', nextInvoiceNumber);
+      console.log('Type:', req.body.invoiceType || 'ADVANCE/CREATE');
+      console.log('Items count:', (req.body.items || []).length);
+      console.log('Rates sample:', (req.body.items || []).slice(0, 2).map(i => ({ name: i.productName, rate: i.dailyRate })));
+      console.log('Totals:', {
+        totalAmount,
+        advanceAmount,
+        paidAmount,
+        outstandingAmount
+      });
+      console.log('----------------------------');
+    } catch {}
+
     res.status(201).json({
       success: true,
       message: 'Invoice created successfully',
@@ -191,6 +209,11 @@ export const updateInvoiceById = async (req, res) => {
 // UPDATE Rental Invoice with Partial Return Data
 export const updateRentalInvoice = async (req, res) => {
   try {
+    // Raw request logging for debugging
+    try {
+      console.log('>>> UPDATE REQ PARAMS:', req.params || {});
+      console.log('>>> UPDATE REQ BODY:', JSON.stringify(req.body));
+    } catch {}
     const { id } = req.params;
    
     // Find the existing invoice
@@ -254,6 +277,15 @@ export const updateRentalInvoice = async (req, res) => {
           partialAmount: Number(partialAmount.toFixed(2))
         });
         partialSubtotal += partialAmount;
+        // Per-item debug
+        try {
+          console.log('--- PARTIAL ITEM DEBUG ---');
+          console.log('Item:', inc.productName || exist.productName);
+          console.log('RentedQty:', rentedQty, 'AlreadyReturned:', alreadyReturned, 'ReturnNow:', newlyReturned);
+          console.log('Rate:', dailyRate, 'Start:', startForReturned, 'PartialDate:', thisPartialReturnDate, 'Days:', d);
+          console.log('PartialAmount:', partialAmount);
+          console.log('--------------------------');
+        } catch {}
       }
 
       // Remaining accrual starts next day after partial return
@@ -286,23 +318,54 @@ export const updateRentalInvoice = async (req, res) => {
     const partialTax = cgstAmount + sgstAmount + ugstAmount + igstAmount;
     const partialTotal = partialSubtotal + partialTax;
 
-    // Apply advance first, then collect remaining as partial payment
+    try {
+      console.log('=== PARTIAL SUMMARY DEBUG ===');
+      console.log('EntryDate:', entryDate);
+      console.log('ReturnedItems:', returnedItemsForHistory);
+      console.log('Subtotal:', partialSubtotal, 'Tax:', partialTax, 'Total:', partialTotal);
+      console.log('CGST/SGST/UGST/IGST:', { cgstRate, sgstRate, ugstRate, igstRate });
+    } catch {}
+
+    // Cash-first, then advance for any remaining partial amount
     let newAdvance = originalAdvance;
-    let collectedNow = 0;
-    if (partialTotal > 0) {
-      if (newAdvance >= partialTotal) {
-        newAdvance = Number((newAdvance - partialTotal).toFixed(2));
-        collectedNow = 0;
-      } else {
-        collectedNow = Number((partialTotal - newAdvance).toFixed(2));
-        newAdvance = 0;
-      }
-    }
+    // Treat client-sent paidAmount as cash collected for THIS event (not lifecycle total)
+    const requestedPaidNow = Number((req.body?.paymentDetails?.paidAmount ?? 0));
+    let appliedFromCashToPartial = Math.min(partialTotal, Math.max(0, requestedPaidNow));
+    let remainingPartialAfterCash = Math.max(0, Number((partialTotal - appliedFromCashToPartial).toFixed(2)));
+    let appliedFromAdvance = Math.min(newAdvance, remainingPartialAfterCash);
+    newAdvance = Number((newAdvance - appliedFromAdvance).toFixed(2));
+    const collectedNow = Number((requestedPaidNow).toFixed(2)); // full cash collected now
     const newPaidAmount = Number((alreadyPaid + collectedNow).toFixed(2));
 
-    // Recompute outstanding based on original totalRentAmount if present
+    // Re-baseline outstanding to current invoice total (from client request) minus (advance + paid so far)
+    // This aligns with user's expectation: outstanding = currentTotal - (advance + partial cash total)
     const baseTotal = parseFloat(existingInvoice.paymentDetails?.totalRentAmount || existingInvoice.totalAmount || 0);
-    const newOutstandingAmount = Math.max(0, Number((baseTotal + damageCharges - newAdvance - newPaidAmount).toFixed(2)));
+    const currentInvoiceTotal = parseFloat(req.body?.totalAmount ?? partialTotal ?? 0);
+    const paidSoFarTotal = Number((originalAdvance + newPaidAmount).toFixed(2));
+    const newOutstandingAmount = Math.max(0, Number((currentInvoiceTotal - paidSoFarTotal).toFixed(2)));
+
+    try {
+      console.log('Advance/Payout DEBUG:', {
+        advance: originalAdvance,
+        remainingAdvance: newAdvance,
+        collectedNow,
+        alreadyPaid,
+        newPaidAmount,
+        fullAmount: baseTotal,
+        damageCharges,
+        appliedFromCashToPartial,
+        appliedFromAdvance,
+        outstanding: newOutstandingAmount
+      });
+      console.log('--- SUMMARY ---', {
+        advance: originalAdvance,
+        partialAmount: Number(partialTotal.toFixed(2)),
+        fullAmount: currentInvoiceTotal,
+        outstanding: newOutstandingAmount,
+        remainingAdvance: newAdvance,
+        collectedNow
+      });
+    } catch {}
 
     // Append partial history if PARTIAL and we have returned items
     if (req.body.invoiceType === 'PARTIAL' && returnedItemsForHistory.length > 0) {
@@ -355,6 +418,14 @@ export const updateRentalInvoice = async (req, res) => {
       // Persist updated items with cumulative returned quantities
       items: updatedItems
     };
+
+    try {
+      console.log('Status DEBUG:', {
+        requestedType: req.body.invoiceType,
+        computedStatus,
+        allReturned,
+      });
+    } catch {}
     
 
    
