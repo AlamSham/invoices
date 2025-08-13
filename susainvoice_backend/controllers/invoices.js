@@ -1,5 +1,38 @@
 import Invoice from "../models/invoices.js";
 
+// ===== Helpers =====
+const parseYMD = (s) => {
+  if (!s) return null;
+  const d = new Date(`${s}T00:00:00`);
+  return isNaN(d.getTime()) ? null : d;
+};
+
+// Days between yyyy-mm-dd dates, ceil, non-negative
+const daysBetween = (start, end) => {
+  if (!start || !end) return 0;
+  try {
+    const sd = parseYMD(start);
+    const ed = parseYMD(end);
+    if (!sd || !ed) return 0;
+    const diff = (ed.getTime() - sd.getTime()) / (1000 * 60 * 60 * 24);
+    return Math.max(0, Math.ceil(diff));
+  } catch {
+    return 0;
+  }
+};
+
+// Add days to yyyy-mm-dd and return yyyy-mm-dd
+const addDaysYMD = (ymd, days) => {
+  if (!ymd) return ymd;
+  const d = parseYMD(ymd);
+  if (!d) return ymd;
+  d.setDate(d.getDate() + (days || 0));
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
+
 // ============= NEW RENTAL INVOICE SYSTEM =============
 
 // Helper function to generate next invoice number in format INV-2500, INV-2501
@@ -169,35 +202,18 @@ export const updateRentalInvoice = async (req, res) => {
       });
     }
    
-    // Calculate updated payment details
-    const totalAmount = req.body.totalAmount || existingInvoice.totalAmount || 0;
-    const originalAdvance = existingInvoice.paymentDetails?.advanceAmount || 0;
-    const newPaidAmount = parseFloat(req.body.paymentDetails?.paidAmount || 0);
+    // Prepare payment baseline
+    const originalAdvance = parseFloat(existingInvoice.paymentDetails?.advanceAmount || 0);
+    const alreadyPaid = parseFloat(existingInvoice.paymentDetails?.paidAmount || 0);
     const damageCharges = parseFloat(req.body.paymentDetails?.damageCharges || 0);
-    
-    // Calculate new outstanding amount
-    const settlementFinalAmount = totalAmount + damageCharges;
-    const newOutstandingAmount = Math.max(0, settlementFinalAmount - originalAdvance - newPaidAmount);
-    
+
+    // We will compute partial invoice amount (this event) from items below
+    let partialSubtotal = 0;
+    let returnedItemsForHistory = [];
+
     // Build partial return history entry if this is a PARTIAL update
     let updatedPartialHistory = existingInvoice.partialReturnHistory || [];
-    if (req.body.invoiceType === 'PARTIAL') {
-      const entryDate = req.body.rentalDetails?.partialReturnDate || req.body.Date || new Date().toISOString().split('T')[0];
-      const returnedItems = (req.body.items || [])
-        .map(it => ({
-          productName: it.productName,
-          returnedQuantity: parseInt(it.returnedQuantity) || 0,
-          partialAmount: parseFloat(it.amount) || 0
-        }))
-        .filter(it => it.returnedQuantity > 0);
-      const historyEntry = {
-        returnDate: entryDate,
-        returnedItems,
-        partialPayment: parseFloat(req.body.paymentDetails?.paidAmount || 0),
-        notes: req.body.notes || 'Partial return recorded'
-      };
-      updatedPartialHistory = [...updatedPartialHistory, historyEntry];
-    }
+    const entryDate = req.body.rentalDetails?.partialReturnDate || req.body.Date || new Date().toISOString().split('T')[0];
 
     // Validate and accumulate returned quantities per item, updating items array
     let updatedItems = existingInvoice.items ? existingInvoice.items.map(i => ({ ...i.toObject?.() || i })) : [];
@@ -224,19 +240,79 @@ export const updateRentalInvoice = async (req, res) => {
 
       // Accumulate returned quantity
       const newTotalReturned = alreadyReturned + newlyReturned;
+
+      // Compute partial amount for this returned chunk
+      const dailyRate = parseFloat((inc.dailyRate ?? exist.dailyRate) || 0);
+      const startForReturned = (inc.startDate ?? exist.startDate) || (existingInvoice.rentalDetails?.startDate || entryDate);
+      const thisPartialReturnDate = inc.partialReturnDate || entryDate;
+      const d = daysBetween(startForReturned, thisPartialReturnDate);
+      const partialAmount = Math.max(0, d) * Math.max(0, dailyRate) * Math.max(0, newlyReturned);
+      if (newlyReturned > 0) {
+        returnedItemsForHistory.push({
+          productName: inc.productName || exist.productName,
+          returnedQuantity: newlyReturned,
+          partialAmount: Number(partialAmount.toFixed(2))
+        });
+        partialSubtotal += partialAmount;
+      }
+
+      // Remaining accrual starts next day after partial return
+      const remainingAfterThis = Math.max(0, rentedQty - newTotalReturned);
+      const partialDate = thisPartialReturnDate;
+      const accrualStartNextDay = remainingAfterThis > 0 ? addDaysYMD(partialDate, 1) : (inc.startDate ?? exist.startDate);
+
       updatedItems[i] = {
         ...exist,
-        // persist cumulative returned quantity
         returnedQuantity: newTotalReturned,
-        // Update optional fields from incoming payload (e.g., dates, rate/amount adjustments)
-        startDate: inc.startDate ?? exist.startDate,
+        startDate: accrualStartNextDay,
         endDate: inc.endDate ?? exist.endDate,
-        partialReturnDate: inc.partialReturnDate ?? exist.partialReturnDate,
-        dailyRate: inc.dailyRate ?? exist.dailyRate,
+        partialReturnDate: partialDate ?? exist.partialReturnDate,
+        dailyRate: isNaN(dailyRate) ? exist.dailyRate : dailyRate,
         totalDays: inc.totalDays ?? exist.totalDays,
         amount: inc.amount ?? exist.amount,
         rentAmount: inc.rentAmount ?? exist.rentAmount,
       };
+    }
+
+    // Compute taxes for this partial event using existing invoice tax rates
+    const cgstRate = parseFloat(existingInvoice.cgstRate || 0);
+    const sgstRate = parseFloat(existingInvoice.sgstRate || 0);
+    const ugstRate = parseFloat(existingInvoice.ugstRate || 0);
+    const igstRate = parseFloat(existingInvoice.igstRate || 0);
+    const cgstAmount = (partialSubtotal * cgstRate) / 100;
+    const sgstAmount = (partialSubtotal * sgstRate) / 100;
+    const ugstAmount = (partialSubtotal * ugstRate) / 100;
+    const igstAmount = (partialSubtotal * igstRate) / 100;
+    const partialTax = cgstAmount + sgstAmount + ugstAmount + igstAmount;
+    const partialTotal = partialSubtotal + partialTax;
+
+    // Apply advance first, then collect remaining as partial payment
+    let newAdvance = originalAdvance;
+    let collectedNow = 0;
+    if (partialTotal > 0) {
+      if (newAdvance >= partialTotal) {
+        newAdvance = Number((newAdvance - partialTotal).toFixed(2));
+        collectedNow = 0;
+      } else {
+        collectedNow = Number((partialTotal - newAdvance).toFixed(2));
+        newAdvance = 0;
+      }
+    }
+    const newPaidAmount = Number((alreadyPaid + collectedNow).toFixed(2));
+
+    // Recompute outstanding based on original totalRentAmount if present
+    const baseTotal = parseFloat(existingInvoice.paymentDetails?.totalRentAmount || existingInvoice.totalAmount || 0);
+    const newOutstandingAmount = Math.max(0, Number((baseTotal + damageCharges - newAdvance - newPaidAmount).toFixed(2)));
+
+    // Append partial history if PARTIAL and we have returned items
+    if (req.body.invoiceType === 'PARTIAL' && returnedItemsForHistory.length > 0) {
+      const historyEntry = {
+        returnDate: entryDate,
+        returnedItems: returnedItemsForHistory,
+        partialPayment: collectedNow,
+        notes: req.body.notes || 'Partial return recorded'
+      };
+      updatedPartialHistory = [...updatedPartialHistory, historyEntry];
     }
 
     // Determine if all items are fully returned
@@ -256,13 +332,15 @@ export const updateRentalInvoice = async (req, res) => {
       ...req.body,
       paymentDetails: {
         ...existingInvoice.paymentDetails,
-        ...req.body.paymentDetails,
-        totalRentAmount: totalAmount,
-        advanceAmount: originalAdvance, // Keep original advance
-        paidAmount: newPaidAmount,
         damageCharges: damageCharges,
+        // Keep totalRentAmount as is; this is lifecycle total
+        totalRentAmount: existingInvoice.paymentDetails?.totalRentAmount || existingInvoice.totalAmount || 0,
+        // Advance reduced by partial event first
+        advanceAmount: newAdvance,
+        // Paid increases by what we collected now (beyond advance)
+        paidAmount: newPaidAmount,
         outstandingAmount: newOutstandingAmount,
-        finalAmount: settlementFinalAmount
+        finalAmount: existingInvoice.paymentDetails?.finalAmount || existingInvoice.totalAmount || 0
       },
       // Update rental status based on invoice type
       rentalDetails: {
@@ -288,12 +366,39 @@ export const updateRentalInvoice = async (req, res) => {
       { new: true, runValidators: true }
     );
     
-    
-    
+    // Build remaining items summary (derived, not persisted)
+    const remainingSummary = (updatedInvoice.items || []).map((it) => {
+      const rented = parseInt(it.rentedQuantity) || 0;
+      const returned = parseInt(it.returnedQuantity) || 0;
+      const remaining = Math.max(0, rented - returned);
+      return {
+        productName: it.productName,
+        remainingQuantity: remaining,
+        accruesFrom: remaining > 0 ? it.startDate : null
+      };
+    }).filter(r => r.remainingQuantity > 0);
+
+    // Partial totals (derived for this event)
+    const partialTotals = {
+      subtotal: Number(partialSubtotal.toFixed(2)),
+      cgstRate: parseFloat(existingInvoice.cgstRate || 0),
+      sgstRate: parseFloat(existingInvoice.sgstRate || 0),
+      ugstRate: parseFloat(existingInvoice.ugstRate || 0),
+      igstRate: parseFloat(existingInvoice.igstRate || 0),
+      taxAmount: Number((partialTotal - partialSubtotal).toFixed(2)),
+      total: Number(partialTotal.toFixed(2)),
+      usedAdvance: Number(((originalAdvance - (updateData.paymentDetails.advanceAmount || 0)) || 0).toFixed(2)),
+      collectedNow: Number((newPaidAmount - alreadyPaid).toFixed(2)),
+      remainingAdvance: Number((updateData.paymentDetails.advanceAmount || 0).toFixed(2)),
+      outstandingAmount: updateData.paymentDetails.outstandingAmount
+    };
+
     res.json({
       success: true,
       message: `Rental invoice updated successfully (${req.body.invoiceType || 'UPDATE'})`,
-      data: updatedInvoice
+      data: updatedInvoice,
+      remainingSummary,
+      partialTotals
     });
     
   } catch (error) {

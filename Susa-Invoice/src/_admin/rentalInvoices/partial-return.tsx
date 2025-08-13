@@ -27,6 +27,11 @@ export default function PartialReturn() {
     // stamp: stamp,
   })
 
+  // Server-computed metadata for full record keeping (no UI calc)
+  const [partialTotals, setPartialTotals] = useState<any | null>(null)
+  const [remainingSummary, setRemainingSummary] = useState<any[] | null>(null)
+  const [partialHistory, setPartialHistory] = useState<any[] | null>(null)
+
   const [invoiceData, setInvoiceData] = useState<RentalInvoiceData>({
     invoiceNumber: "001",
     Date: new Date().toISOString().split("T")[0],
@@ -264,6 +269,18 @@ export default function PartialReturn() {
       )
       
       if (response.data.success) {
+        // Update local invoice snapshot with server truth
+        if (response.data.data) {
+          setInvoiceData(prev => ({
+            ...prev,
+            ...response.data.data,
+          }) as any)
+          // capture updated history from server
+          setPartialHistory(response.data.data.partialReturnHistory || null)
+        }
+        // Capture derived summaries for display
+        setPartialTotals(response.data.partialTotals || null)
+        setRemainingSummary(response.data.remainingSummary || null)
         alert(`Partial return saved successfully!`)
         setIsEditingMode(false)
       }
@@ -333,6 +350,81 @@ export default function PartialReturn() {
           isPhysicalCopy={false}
           invoiceType="PARTIAL"
         />
+
+        {/* Server-side Partial Event Summary */}
+        {partialTotals && (
+          <div style={{ marginTop: 16, padding: 12, border: '1px solid #e5e7eb', borderRadius: 8 }}>
+            <div style={{ fontWeight: 'bold', marginBottom: 8 }}>This Partial Event Summary (Server)</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+              <div>Subtotal: ₹{partialTotals.subtotal?.toFixed?.(2) ?? partialTotals.subtotal}</div>
+              <div>Tax: ₹{partialTotals.taxAmount?.toFixed?.(2) ?? partialTotals.taxAmount}</div>
+              <div>Total: ₹{partialTotals.total?.toFixed?.(2) ?? partialTotals.total}</div>
+              <div>Used Advance: ₹{partialTotals.usedAdvance}</div>
+              <div>Collected Now: ₹{partialTotals.collectedNow}</div>
+              <div>Remaining Advance: ₹{partialTotals.remainingAdvance}</div>
+              <div>Outstanding: ₹{partialTotals.outstandingAmount}</div>
+            </div>
+          </div>
+        )}
+
+        {/* Remaining Items Summary */}
+        {remainingSummary && remainingSummary.length > 0 && (
+          <div style={{ marginTop: 16, padding: 12, border: '1px solid #e5e7eb', borderRadius: 8 }}>
+            <div style={{ fontWeight: 'bold', marginBottom: 8 }}>Remaining Items (Accrues From)</div>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 6 }}>Item</th>
+                  <th style={{ textAlign: 'right', borderBottom: '1px solid #e5e7eb', padding: 6 }}>Remaining</th>
+                  <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 6 }}>Accrues From</th>
+                </tr>
+              </thead>
+              <tbody>
+                {remainingSummary.map((r: any, idx: number) => (
+                  <tr key={idx}>
+                    <td style={{ padding: 6, borderBottom: '1px solid #f3f4f6' }}>{r.productName}</td>
+                    <td style={{ padding: 6, textAlign: 'right', borderBottom: '1px solid #f3f4f6' }}>{r.remainingQuantity}</td>
+                    <td style={{ padding: 6, borderBottom: '1px solid #f3f4f6' }}>{r.accruesFrom || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Partial Return History (from server) */}
+        {partialHistory && partialHistory.length > 0 && (
+          <div id="partial-return-history" style={{ marginTop: 16, padding: 12, border: '1px solid #e5e7eb', borderRadius: 8 }}>
+            <div style={{ fontWeight: 'bold', marginBottom: 8 }}>Partial Return History</div>
+            {partialHistory.map((h: any, idx: number) => (
+              <div key={idx} style={{ marginBottom: 12 }}>
+                <div style={{ fontWeight: 600 }}>Return Date: {h.returnDate}</div>
+                <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 6 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 6 }}>Item</th>
+                      <th style={{ textAlign: 'right', borderBottom: '1px solid #e5e7eb', padding: 6 }}>Returned Qty</th>
+                      <th style={{ textAlign: 'right', borderBottom: '1px solid #e5e7eb', padding: 6 }}>Amount (₹)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(h.returnedItems || []).map((ri: any, rIdx: number) => (
+                      <tr key={rIdx}>
+                        <td style={{ padding: 6, borderBottom: '1px solid #f3f4f6' }}>{ri.productName}</td>
+                        <td style={{ padding: 6, textAlign: 'right', borderBottom: '1px solid #f3f4f6' }}>{ri.returnedQuantity}</td>
+                        <td style={{ padding: 6, textAlign: 'right', borderBottom: '1px solid #f3f4f6' }}>₹{ri.partialAmount}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {typeof h.partialPayment === 'number' && (
+                  <div style={{ marginTop: 4 }}>Partial Payment Collected: ₹{h.partialPayment}</div>
+                )}
+                {h.notes && <div style={{ color: '#6b7280' }}>{h.notes}</div>}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <RentalActions
