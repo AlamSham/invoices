@@ -84,7 +84,7 @@ export default function RentalDetails() {
       const token = localStorage.getItem("refreshToken")
       
       const response = await axios.get(
-        `http://localhost:5000/api/invoice/rental/details/${invoiceId}`,
+        `https://invoices-dk2w.onrender.com/api/invoice/rental/details/${invoiceId}`,
         {
           headers: { Authorization: `Bearer ${token}` },
         }
@@ -423,13 +423,14 @@ export default function RentalDetails() {
             invoiceType={invoiceType}
             replaceItemsWithSummary={invoiceType === 'FULL' ? (
               <div id="item-movement-summary" style={{
-                backgroundColor: '#f8fafc',
+                backgroundColor: '#ffffff',
                 padding: '16px',
                 borderRadius: '8px',
                 marginTop: '12px',
                 border: '2px solid #e2e8f0'
               }}>
-                <h3 style={{ fontWeight: 'bold', marginBottom: 10, color: '#0f172a', fontSize: 16 }}>Item Movement Summary</h3>
+                <h3 style={{ fontWeight: 'bold', marginBottom: 12, color: '#0f172a', fontSize: 16 }}>Items</h3>
+                <h4 style={{ fontWeight: 600, marginBottom: 10, color: '#0f172a' }}>Item Movement Summary</h4>
                 {(() => {
                   type Seg = { qty: number; start?: string; end?: string }
                   type Ret = { date: string; qty: number }
@@ -437,7 +438,7 @@ export default function RentalDetails() {
                   const earliestStartByProduct = new Map<string, string>()
                   const earliestQtyByProduct = new Map<string, number>()
                   const latestEndByProduct = new Map<string, string>()
-                  ;(invoiceData.items || []).forEach((it: any) => {
+                  ;(invoiceData?.items || []).forEach((it: any) => {
                     const name = it.productName || '-'
                     const qty = typeof it.rentedQuantity === 'string' ? parseFloat(it.rentedQuantity) || 0 : (it.rentedQuantity || 0)
                     const segs = byProduct.get(name) || []
@@ -458,8 +459,8 @@ export default function RentalDetails() {
                     }
                   })
                   const returnsMap = new Map<string, Ret[]>()
-                  const headerDate = (invoiceData as any).Date || (invoiceData as any).createdAt || ''
-                  ;((invoiceData as any).partialReturnHistory || []).forEach((entry: any) => {
+                  const headerDate = (invoiceData as any)?.Date || (invoiceData as any)?.createdAt || ''
+                  ;(((invoiceData as any)?.partialReturnHistory) || []).forEach((entry: any) => {
                     const retDate = entry.returnDate || entry.createdAt || headerDate
                     if (Array.isArray(entry.returnedItems)) {
                       entry.returnedItems.forEach((ri: any) => {
@@ -471,19 +472,20 @@ export default function RentalDetails() {
                       })
                     }
                   })
-                  const productNames = Array.from(new Set<string>([...byProduct.keys(), ...returnsMap.keys()]))
+                  const productNames = Array.from(new Set<string>([ ...byProduct.keys(), ...returnsMap.keys() ]))
                   if (!productNames.length) {
                     return <div style={{ fontSize: 12, color: '#64748b' }}>No movement data.</div>
                   }
                   return (
                     <div style={{ overflowX: 'auto' }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, border: '1px solid #e5e7eb' }}>
                         <thead>
-                          <tr style={{ backgroundColor: '#e2e8f0' }}>
-                            <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #cbd5e1' }}>Event</th>
-                            <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #cbd5e1' }}>Product</th>
-                            <th style={{ textAlign: 'right', padding: 8, borderBottom: '1px solid #cbd5e1' }}>Qty</th>
-                            <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #cbd5e1' }}>Date / Period</th>
+                          <tr style={{ backgroundColor: '#f8fafc' }}>
+                            <th style={{ textAlign: 'center', padding: 8, borderBottom: '1px solid #e2e8f0', borderRight: '1px solid #e5e7eb', width: 56 }}>S.No</th>
+                            <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #e2e8f0', borderRight: '1px solid #e5e7eb' }}>Event</th>
+                            <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #e2e8f0', borderRight: '1px solid #e5e7eb' }}>Product</th>
+                            <th style={{ textAlign: 'right', padding: 8, borderBottom: '1px solid #e2e8f0', borderRight: '1px solid #e5e7eb' }}>Qty</th>
+                            <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #e2e8f0' }}>Date / Period</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -496,30 +498,40 @@ export default function RentalDetails() {
                             const remainingQty = Math.max(0, (issuedQty || 0) - (totalReturned || 0))
                             const lastReturn = retArr.length ? retArr[retArr.length - 1].date : ''
                             const dayAfter = lastReturn ? (() => { const d = new Date(lastReturn); d.setDate(d.getDate() + 1); return d.toISOString().split('T')[0] })() : ''
-                            const latestEnd = latestEndByProduct.get(name) || (segs.length ? segs[segs.length - 1].end || '' : '')
+                            const latestEnd = segs.reduce<string | undefined>((acc, s) => {
+                              if (!acc) return s.end
+                              if (!s.end) return acc
+                              return new Date(s.end) > new Date(acc) ? s.end : acc
+                            }, undefined)
                             const extDays = (dayAfter && latestEnd) ? daysBetween(dayAfter, latestEnd) : 0
                             return (
                               <Fragment key={`ims-inline-${name}`}>
-                                <tr key={`${name}-issued`}>
-                                  <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>ISSUED</td>
-                                  <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{name}</td>
-                                  <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', textAlign: 'right' }}>{issuedQty}</td>
+                                <tr>
+                                  <th colSpan={4} style={{ textAlign: 'left', backgroundColor: '#f1f5f9', padding: 8, borderBottom: '1px solid #e5e7eb' }}>Product: {name}</th>
+                                </tr>
+                                <tr style={{ backgroundColor: '#ffffff' }}>
+                                  <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', textAlign: 'center' }}>1</td>
+                                  <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb' }}>ISSUED</td>
+                                  <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb' }}>{name}</td>
+                                  <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', textAlign: 'right' }}>{issuedQty}</td>
                                   <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{earliestStart ? new Date(earliestStart).toLocaleDateString('en-GB') : '-'}</td>
                                 </tr>
                                 {retArr.map((r, idx) => (
-                                  <tr key={`${name}-ret-${idx}`}>
-                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>PARTIAL RETURN</td>
-                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{name}</td>
-                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', textAlign: 'right' }}>{r.qty}</td>
+                                  <tr key={`${name}-ret-${idx}`} style={{ backgroundColor: idx % 2 === 0 ? '#fafafa' : '#ffffff' }}>
+                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', textAlign: 'center' }}>{idx + 2}</td>
+                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb' }}>PARTIAL RETURN</td>
+                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb' }}>{name}</td>
+                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', textAlign: 'right' }}>{r.qty}</td>
                                     <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{new Date(r.date).toLocaleDateString('en-GB')}</td>
                                   </tr>
                                 ))}
                                 {(remainingQty > 0 && latestEnd) && (
-                                  <tr key={`${name}-ext`}>
-                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>EXTENDED</td>
-                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{name}</td>
-                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', textAlign: 'right' }}>{remainingQty}</td>
-                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{(dayAfter ? new Date(dayAfter).toLocaleDateString('en-GB') : '-') + ' → ' + (latestEnd ? new Date(latestEnd).toLocaleDateString('en-GB') : '-')}{extDays ? ` (${extDays} days)` : ''}</td>
+                                  <tr>
+                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', textAlign: 'center' }}>{retArr.length + 2}</td>
+                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb' }}>EXTENDED</td>
+                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb' }}>{name}</td>
+                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', textAlign: 'right' }}>{remainingQty}</td>
+                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{(dayAfter ? new Date(dayAfter).toLocaleDateString('en-GB') : '-') + ' → ' + (latestEnd ? new Date(latestEnd).toLocaleDateString('en-GB') : '')}{extDays ? ` (${extDays} days)` : ''}</td>
                                   </tr>
                                 )}
                               </Fragment>
@@ -530,14 +542,16 @@ export default function RentalDetails() {
                     </div>
                   )
                 })()}
+                
               </div>
             ) : undefined}
           />
-        </div>
-        
+          </div>
 
-        {/* Partial Return History (Read-only) */}
-        {(invoiceData.partialReturnHistory && invoiceData.partialReturnHistory.length > 0) && (
+          
+
+          {/* Partial Return History (hidden for FULL invoices) */}
+        {(getInvoiceTypeFromData(invoiceData) !== 'FULL' && invoiceData.partialReturnHistory && invoiceData.partialReturnHistory.length > 0) && (
           <div id="partial-return-history" style={{
             backgroundColor: '#ecfeff',
             padding: '20px',
@@ -586,7 +600,8 @@ export default function RentalDetails() {
           </div>
         )}
 
-        {/* Rental Activity Timeline */}
+        {/* Rental Activity Timeline (hidden for FULL invoices) */}
+        {getInvoiceTypeFromData(invoiceData) !== 'FULL' && (
         <div style={{ backgroundColor: '#eef2ff', padding: 20, borderRadius: 8, marginTop: 16, border: '2px solid #c7d2fe' }}>
           <h3 style={{ fontWeight: 'bold', marginBottom: 12, color: '#1e3a8a', fontSize: 18 }}>Rental Activity Timeline</h3>
           {(() => {
@@ -701,9 +716,9 @@ export default function RentalDetails() {
                             notes: 'Partial return'
                           })
                         })
-                        // Remaining accrual per item segment to reflect extensions distinctly
+                        // Remaining accrual per item segment (hide for FULL to avoid duplication with top summary)
                         const segs = segsByProduct.get(name) || (rem ? [rem] : [])
-                        if (segs.length) {
+                        if (segs.length && getInvoiceTypeFromData(invoiceData) !== 'FULL') {
                           const lastReturn = lastReturnMap.get(name)
                           const dayAfter = lastReturn ? addDays(lastReturn, 1) : ''
                           segs.forEach((seg) => {
@@ -748,6 +763,10 @@ export default function RentalDetails() {
               )
             })()}
           </div>
+        )}
+
+        {/* Final Settlement Items Table (shown only for FULL invoices) */}
+        {getInvoiceTypeFromData(invoiceData) === 'FULL' && null}
 
         {/* Legacy Logs section: removed for FULL invoices (timeline replaces); logs below are conditioned */}
 

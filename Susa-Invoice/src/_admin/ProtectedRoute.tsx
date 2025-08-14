@@ -21,7 +21,7 @@ export default function ProtectedRoute({ children }: ProtectedRouteProps) {
 
       try {
         const res = await axios.post(
-          "http://localhost:5000/api/user/validate",
+          "https://invoices-dk2w.onrender.com/api/user/validate",
           { refreshToken },
           { headers: { "Content-Type": "application/json" } }
         )

@@ -21,7 +21,7 @@ export default function RentalInvoiceView() {
 
       try {
         const token = localStorage.getItem('token') || localStorage.getItem('refreshToken')
-        const response = await axios.get(`http://localhost:5000/api/invoice/getbyId/${invoiceId}`, {
+        const response = await axios.get(`https://invoices-dk2w.onrender.com/api/invoice/getbyId/${invoiceId}`, {
           headers: { Authorization: `Bearer ${token}` }
         })
 

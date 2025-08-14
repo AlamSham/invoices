@@ -1,4 +1,4 @@
-﻿"use client"
+"use client"
 import { useState, useEffect } from "react"
 import axios from "axios"
 import { useParams, useNavigate } from "react-router-dom"
@@ -65,7 +65,7 @@ export default function AllRentalInvoices({ onNewInvoice, onViewInvoice }: AllRe
 
       try {
         setLoading(true)
-        const response = await axios.get<ApiResponse>(`http://localhost:5000/api/invoice/rental/company/${companyId}`, {
+        const response = await axios.get<ApiResponse>(`https://invoices-dk2w.onrender.com/api/invoice/rental/company/${companyId}`, {
           headers: {
             Authorization: `Bearer ${localStorage.getItem('token')}`
           }
@@ -276,7 +276,13 @@ export default function AllRentalInvoices({ onNewInvoice, onViewInvoice }: AllRe
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {currentItems.length > 0 ? (
-                  currentItems.map((invoice) => (
+                  currentItems.map((invoice) => {
+                    const outstanding = Number(
+                      (invoice.paymentDetails?.outstandingAmount as number | undefined) ??
+                      (invoice.outstandingAmount as number | undefined) ??
+                      0
+                    )
+                    return (
                     <tr key={invoice._id} className="hover:bg-gray-50 transition-colors duration-200">
                       <td className="px-6 py-4 whitespace-nowrap">
                         <div className="text-sm font-medium text-gray-900">#{invoice.invoiceNumber}</div>
@@ -298,8 +304,8 @@ export default function AllRentalInvoices({ onNewInvoice, onViewInvoice }: AllRe
                         ₹{(invoice.totalAmount || 0).toLocaleString()}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm">
-                        <span className={`font-medium ${(invoice.paymentDetails?.outstandingAmount || invoice.outstandingAmount || 0) > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                          ₹{(invoice.paymentDetails?.outstandingAmount || invoice.outstandingAmount || 0).toLocaleString()}
+                        <span className={`font-medium ${outstanding > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                          ₹{outstanding.toLocaleString()}
                         </span>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
@@ -314,8 +320,8 @@ export default function AllRentalInvoices({ onNewInvoice, onViewInvoice }: AllRe
                             <Eye className="w-3 h-3 mr-1" />
                             View
                           </button>
-                          
-                          {invoice.status !== 'COMPLETED' && (invoice.paymentDetails?.outstandingAmount || invoice.outstandingAmount || 0) > 0 && (
+
+                          {invoice.status !== 'COMPLETED' && outstanding !== 0 && (
                             <>
                               <button
                                 onClick={() => handlePartialPayment(invoice._id)}
@@ -324,20 +330,31 @@ export default function AllRentalInvoices({ onNewInvoice, onViewInvoice }: AllRe
                                 <CreditCard className="w-3 h-3 mr-1" />
                                 Partial
                               </button>
-                              
-                              <button
-                                onClick={() => handleFullSettlement(invoice._id)}
-                                className="inline-flex items-center px-2 py-1 bg-green-100 hover:bg-green-200 text-green-700 text-xs font-medium rounded-md transition-colors duration-200"
-                              >
-                                <CheckCircle className="w-3 h-3 mr-1" />
-                                Full
-                              </button>
+
+                              {outstanding > 0 ? (
+                                <button
+                                  onClick={() => handleFullSettlement(invoice._id)}
+                                  className="inline-flex items-center px-2 py-1 bg-green-100 hover:bg-green-200 text-green-700 text-xs font-medium rounded-md transition-colors duration-200"
+                                >
+                                  <CheckCircle className="w-3 h-3 mr-1" />
+                                  Full
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={handleNewAdvanceInvoice}
+                                  className="inline-flex items-center px-2 py-1 bg-indigo-100 hover:bg-indigo-200 text-indigo-700 text-xs font-medium rounded-md transition-colors duration-200"
+                                >
+                                  <Plus className="w-3 h-3 mr-1" />
+                                  Advance
+                                </button>
+                              )}
                             </>
                           )}
                         </div>
                       </td>
                     </tr>
-                  ))
+                    )
+                  })
                 ) : (
                   <tr>
                     <td colSpan={8} className="px-6 py-12 text-center">

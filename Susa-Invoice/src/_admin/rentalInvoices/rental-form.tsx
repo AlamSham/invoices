@@ -519,7 +519,7 @@ export default function RentalForm({
                   Days
                 </th>
                 <th style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "center", fontSize: "11px", fontWeight: "600" }}>
-                  HSN Code
+                  {invoiceType === 'PARTIAL' ? 'Quantity' : 'HSN Code'}
                 </th>
                 <th style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "right", fontSize: "11px", fontWeight: "600" }}>
                   Amount (₹)

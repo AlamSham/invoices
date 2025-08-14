@@ -35,7 +35,7 @@ export default function Files() {
     endDate: "",
   })
   const [toasts, setToasts] = useState<Toast[]>([])
-  const API_BASE = "http://localhost:5000/api/files" // Adjust this to your backend URL
+  const API_BASE = "https://invoices-dk2w.onrender.com/api/files" // Adjust this to your backend URL
 
   // Configure axios defaults
   axios.defaults.timeout = 10000 // 10 seconds timeout
