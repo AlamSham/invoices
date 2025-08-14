@@ -31,6 +31,7 @@ export default function PartialReturn() {
   const [partialTotals, setPartialTotals] = useState<any | null>(null)
   const [remainingSummary, setRemainingSummary] = useState<any[] | null>(null)
   const [partialHistory, setPartialHistory] = useState<any[] | null>(null)
+  const [originalAdvanceAmount, setOriginalAdvanceAmount] = useState<number>(0)
 
   const [invoiceData, setInvoiceData] = useState<RentalInvoiceData>({
     invoiceNumber: "001",
@@ -149,6 +150,8 @@ export default function PartialReturn() {
           paymentDetails: parent.paymentDetails,
           invoiceType: 'PARTIAL',
         })
+        // Keep a copy of parent's original advance for display purposes in UI
+        setOriginalAdvanceAmount(Number(parent?.paymentDetails?.advanceAmount || 0))
         
       }
     } catch (error: any) {
@@ -245,17 +248,116 @@ export default function PartialReturn() {
         if (retQty > 0 && (!cleanedItem.partialReturnDate || cleanedItem.partialReturnDate.trim() === '')) {
           cleanedItem.partialReturnDate = today
         }
+        // Coerce numeric fields to numbers for backend persistence
+        cleanedItem.rentedQuantity = typeof cleanedItem.rentedQuantity === 'string' ? parseFloat(cleanedItem.rentedQuantity) || 0 : (cleanedItem.rentedQuantity || 0)
+        cleanedItem.returnedQuantity = typeof cleanedItem.returnedQuantity === 'string' ? parseFloat(cleanedItem.returnedQuantity) || 0 : (cleanedItem.returnedQuantity || 0)
+        cleanedItem.dailyRate = typeof cleanedItem.dailyRate === 'string' ? parseFloat(cleanedItem.dailyRate) || 0 : (cleanedItem.dailyRate || 0)
+        cleanedItem.totalDays = typeof cleanedItem.totalDays === 'string' ? parseFloat(cleanedItem.totalDays) || 0 : (cleanedItem.totalDays || 0)
+        cleanedItem.amount = typeof cleanedItem.amount === 'string' ? parseFloat(cleanedItem.amount) || 0 : (cleanedItem.amount || cleanedItem.rentAmount || 0)
         return cleanedItem
       })
       
+      // Map UI partial payment input to server contract: additionalPayment
+      const additionalPayment = Number(invoiceData.paymentDetails?.paidAmount || 0) || 0
+
+      // Compute preview sum for remaining items so we can include it in saved totals
+      const msPerDay = 24 * 60 * 60 * 1000
+      const addDaysLocal = (dateStr: string, n: number) => {
+        const d = new Date(dateStr)
+        d.setDate(d.getDate() + n)
+        return d.toISOString().split('T')[0]
+      }
+      const daysBetweenInclusive = (start: string, end: string) => {
+        const s = new Date(start)
+        const e = new Date(end)
+        if (e <= s) return 0
+        return Math.floor((e.getTime() - s.getTime()) / msPerDay) + 1
+      }
+      const previewDetails: Array<{ productName: string; remainingQuantity: number; accruesFrom: string; endDate: string; days: number; dailyRate: number; previewAmount: number }> = []
+      const previewSum = (cleanedItems || []).reduce((sum: number, item: any) => {
+        const rentedQty = typeof item.rentedQuantity === 'string' ? parseFloat(item.rentedQuantity) || 0 : item.rentedQuantity || 0
+        const originalReturned = typeof item.originalReturnedQuantity === 'string' ? parseFloat(item.originalReturnedQuantity) || 0 : (item.originalReturnedQuantity || 0)
+        const retNow = typeof item.returnedQuantity === 'string' ? parseFloat(item.returnedQuantity) || 0 : item.returnedQuantity || 0
+        const remaining = Math.max(0, rentedQty - originalReturned - retNow)
+        if (retNow <= 0 || remaining <= 0) return sum
+        const accruesFrom = item.partialReturnDate ? addDaysLocal(item.partialReturnDate, 1) : ''
+        let previewDays = 0
+        if ((accruesFrom || item.startDate) && item.endDate) {
+          previewDays = daysBetweenInclusive((accruesFrom || item.startDate) as string, item.endDate)
+        }
+        const rate = typeof item.dailyRate === 'string' ? parseFloat(item.dailyRate) || 0 : item.dailyRate || 0
+        const previewAmount = Math.max(0, remaining) * Math.max(0, rate) * Math.max(0, previewDays)
+        previewDetails.push({
+          productName: item.productName || '-',
+          remainingQuantity: remaining,
+          accruesFrom: (accruesFrom || (item.startDate || '')) as string,
+          endDate: item.endDate || '',
+          days: previewDays,
+          dailyRate: rate,
+          previewAmount,
+        })
+        return sum + previewAmount
+      }, 0)
+
+      // Sanitize totals and payment details to ensure numbers are sent
+      const baseSubtotal = Number(invoiceDataWithoutUnused.subtotal || 0)
+      const subtotalWithPreview = baseSubtotal + Number(previewSum || 0)
+      const cgstRateNum = Number(invoiceDataWithoutUnused.cgstRate || 0)
+      const sgstRateNum = Number(invoiceDataWithoutUnused.sgstRate || 0)
+      const ugstRateNum = Number(invoiceDataWithoutUnused.ugstRate || 0)
+      const igstRateNum = Number(invoiceDataWithoutUnused.igstRate || 0)
+      const totalTaxRate = cgstRateNum + sgstRateNum + ugstRateNum + igstRateNum
+      const taxAmountWithPreview = (subtotalWithPreview * totalTaxRate) / 100
+      const totalWithPreview = subtotalWithPreview + taxAmountWithPreview
+      const sanitizedTotals = {
+        subtotal: subtotalWithPreview,
+        cgstRate: cgstRateNum,
+        cgstAmount: (subtotalWithPreview * cgstRateNum) / 100,
+        sgstRate: sgstRateNum,
+        sgstAmount: (subtotalWithPreview * sgstRateNum) / 100,
+        ugstRate: ugstRateNum,
+        ugstAmount: (subtotalWithPreview * ugstRateNum) / 100,
+        igstRate: igstRateNum,
+        igstAmount: (subtotalWithPreview * igstRateNum) / 100,
+        totalTaxAmount: taxAmountWithPreview,
+        totalAmount: totalWithPreview,
+      }
+
+      const pd: NonNullable<RentalInvoiceData['paymentDetails']> =
+        (invoiceDataWithoutUnused.paymentDetails as NonNullable<RentalInvoiceData['paymentDetails']>) ?? {
+          totalRentAmount: 0,
+          advanceAmount: 0,
+          paidAmount: 0,
+          outstandingAmount: 0,
+          refundAmount: 0,
+          finalAmount: 0,
+          damageCharges: 0,
+        }
+      const sanitizedPaymentDetails = {
+        totalRentAmount: Number(pd.totalRentAmount || sanitizedTotals.totalAmount || 0),
+        advanceAmount: Number(pd.advanceAmount || 0),
+        paidAmount: Number(pd.paidAmount || 0),
+        outstandingAmount: Number(pd.outstandingAmount || 0),
+        refundAmount: Number(pd.refundAmount || 0),
+        finalAmount: Number(pd.finalAmount || sanitizedTotals.totalAmount || 0),
+        damageCharges: Number(pd.damageCharges || 0),
+      }
+
       const requestData = {
         ...invoiceDataWithoutUnused,
+        ...sanitizedTotals,
+        paymentDetails: sanitizedPaymentDetails,
         items: cleanedItems,
+        additionalPayment,
+        // Client-side preview details for backend to persist with this partial event
+        previewRemainingSummary: previewDetails,
+        clientPreview: true,
         // Don't send companyId - it should remain unchanged from original invoice
         invoiceType: 'PARTIAL' // PARTIAL for partial return invoices
       }
       
-      // Console log the complete payload
+      // Console log the complete payload for verification
+      console.log('Saving PARTIAL return payload:', JSON.parse(JSON.stringify(requestData)))
       
       // Update existing invoice with partial return data
       const response = await axios.put(
@@ -349,6 +451,7 @@ export default function PartialReturn() {
           companyDetails={companyDetails}
           isPhysicalCopy={false}
           invoiceType="PARTIAL"
+          originalAdvanceAmount={originalAdvanceAmount}
         />
 
         {/* Server-side Partial Event Summary */}
@@ -359,9 +462,19 @@ export default function PartialReturn() {
               <div>Subtotal: ₹{partialTotals.subtotal?.toFixed?.(2) ?? partialTotals.subtotal}</div>
               <div>Tax: ₹{partialTotals.taxAmount?.toFixed?.(2) ?? partialTotals.taxAmount}</div>
               <div>Total: ₹{partialTotals.total?.toFixed?.(2) ?? partialTotals.total}</div>
-              <div>Used Advance: ₹{partialTotals.usedAdvance}</div>
+              {(() => {
+                const usedAdv = Number(partialTotals.usedAdvance || 0)
+                const remAdv = Number(partialTotals.remainingAdvance || 0)
+                const originalAdv = usedAdv + remAdv
+                return (
+                  <>
+                    <div>Advance Taken (Original): ₹{originalAdv}</div>
+                    <div>Advance Remaining: ₹{remAdv}</div>
+                    <div>Used Advance This Event: ₹{usedAdv}</div>
+                  </>
+                )
+              })()}
               <div>Collected Now: ₹{partialTotals.collectedNow}</div>
-              <div>Remaining Advance: ₹{partialTotals.remainingAdvance}</div>
               <div>Outstanding: ₹{partialTotals.outstandingAmount}</div>
             </div>
           </div>

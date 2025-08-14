@@ -18,6 +18,8 @@ interface RentalActionsProps {
   isSaving?: boolean
   showPhysicalToggle?: boolean
   showEditButton?: boolean
+  // Optional: allow parent to disable the Save button without showing "Saving..."
+  saveDisabled?: boolean
 }
 
 export default function RentalActions({
@@ -34,6 +36,7 @@ export default function RentalActions({
   isSaving = false,
   showPhysicalToggle = true,
   showEditButton = true,
+  saveDisabled = false,
 }: RentalActionsProps) {
   return (
     <div
@@ -163,7 +166,7 @@ export default function RentalActions({
               {isEditingMode && (
                 <button
                   onClick={handleSave}
-                  disabled={isSaving}
+                  disabled={isSaving || saveDisabled}
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -175,7 +178,7 @@ export default function RentalActions({
                     borderRadius: "6px",
                     fontSize: "14px",
                     fontWeight: "500",
-                    cursor: isSaving ? "not-allowed" : "pointer",
+                    cursor: (isSaving || saveDisabled) ? "not-allowed" : "pointer",
                     transition: "all 0.2s",
                   }}
                 >

@@ -11,6 +11,17 @@ import logo from "../../assets/logo1.jpeg"
 import stamp from "../../assets/stamp.png"
 import { daysBetween, addDays } from "./date-utils"
 
+// Local date formatter (dd/MM/yyyy)
+const formatDate = (s?: string) => {
+  if (!s) return '-'
+  const d = new Date(s)
+  if (isNaN(d.getTime())) return s
+  const dd = String(d.getDate()).padStart(2, '0')
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const yyyy = d.getFullYear()
+  return `${dd}/${mm}/${yyyy}`
+}
+
 export default function FullSettlement() {
   const { invoiceId: parentInvoiceId } = useParams<{ invoiceId: string }>()
   const navigate = useNavigate()
@@ -139,6 +150,14 @@ export default function FullSettlement() {
               }
             })
           })
+          // Fallback: infer virtual partial return from current item's fields when history is empty
+          if (!lastReturnDate) {
+            const inferredQty = typeof item.returnedQuantity === 'string' ? parseFloat(item.returnedQuantity) || 0 : item.returnedQuantity || 0
+            const inferredDate = item.partialReturnDate || ''
+            if (inferredQty > 0 && inferredDate) {
+              lastReturnDate = inferredDate
+            }
+          }
           // Accrual starts from the later of startDate and day-after-last-partial
           const dayAfterLast = lastReturnDate ? addDays(lastReturnDate, 1) : ''
           const rawStart = item.startDate || ''
@@ -159,6 +178,9 @@ export default function FullSettlement() {
             rentedQuantity: remaining,
             returnedQuantity: '',
             partialReturnDate: '',
+            // Preview should reflect extension-only window
+            startDate: accruesFrom,
+            endDate: endDate,
             totalDays: days || 0,
             rentAmount: computedAmount || 0,
             amount: computedAmount || 0,
@@ -177,6 +199,19 @@ export default function FullSettlement() {
         const totalAmount = subtotalSum + totalTaxAmount
 
         // Populate all fields with computed data
+        const parentPaid = typeof parent.paymentDetails?.paidAmount === 'string' ? parseFloat(parent.paymentDetails?.paidAmount) || 0 : parent.paymentDetails?.paidAmount || 0
+        const parentAdvance = typeof parent.paymentDetails?.advanceAmount === 'string' ? parseFloat(parent.paymentDetails?.advanceAmount) || 0 : parent.paymentDetails?.advanceAmount || 0
+        const parentOriginalAdvance = ((): number => {
+          const raw = (parent.paymentDetails as any)?.originalAdvanceAmount
+          if (typeof raw === 'string') return parseFloat(raw) || parentAdvance || 0
+          if (typeof raw === 'number') return raw
+          return parentAdvance || 0
+        })()
+        const previewFinal = Math.max(0, subtotalSum + totalTaxAmount)
+        // IMPORTANT: Server is source of truth for outstanding; do NOT recompute as total - paid here
+        const serverOutstanding = typeof parent.paymentDetails?.outstandingAmount === 'string' ? parseFloat(parent.paymentDetails?.outstandingAmount) || 0 : parent.paymentDetails?.outstandingAmount || 0
+        const previewOutstanding = Math.max(0, serverOutstanding)
+
         setInvoiceData({
           invoiceNumber: `FULL-${parent.invoiceNumber}`,
           Date: new Date().toISOString().split("T")[0],
@@ -203,7 +238,15 @@ export default function FullSettlement() {
             ...parent.rentalDetails,
             status: "COMPLETED",
           },
-          paymentDetails: parent.paymentDetails,
+          paymentDetails: {
+            totalRentAmount: previewFinal,
+            advanceAmount: parentAdvance,
+            originalAdvanceAmount: parentOriginalAdvance,
+            paidAmount: parentPaid,
+            outstandingAmount: previewOutstanding, // use server-calculated outstanding
+            refundAmount: 0,
+            finalAmount: previewFinal,
+          },
           partialReturnHistory: parent.partialReturnHistory || [],
           invoiceType: 'FULL',
         })
@@ -306,6 +349,13 @@ export default function FullSettlement() {
   const handleSaveOnly = async () => {
     setIsSaving(true)
     try {
+      // Validate final payment before proceeding
+      const dueNow = ((invoiceData.paymentDetails?.outstandingAmount || 0) + (totalDamageCharges || 0))
+      if (finalPayment < 0 || finalPayment > Math.max(0, dueNow)) {
+        alert('Final payment must be between 0 and the due amount.')
+        setIsSaving(false)
+        return
+      }
       const token = localStorage.getItem('refreshToken')
       
       // Add companyId and type to the request payload
@@ -404,6 +454,10 @@ export default function FullSettlement() {
     )
   }
 
+  // Derive validation flags for UI state
+  const dueNow = ((invoiceData.paymentDetails?.outstandingAmount || 0) + (totalDamageCharges || 0))
+  const isSaveInvalid = (finalPayment < 0 || finalPayment > Math.max(0, dueNow))
+
   return (
     <div style={{ minHeight: "100vh", backgroundColor: "#f9fafb", padding: "16px" }}>
       <div
@@ -440,7 +494,8 @@ export default function FullSettlement() {
 
         <RentalForm
           invoiceData={invoiceData}
-          isEditingMode={isEditingMode}
+          // Force read-only items table in Full Settlement view
+          isEditingMode={false}
           updateInvoiceData={updateInvoiceData}
           calculateAmounts={calculateAmounts}
           companyDetails={companyDetails}
@@ -459,18 +514,10 @@ export default function FullSettlement() {
           }}>
             <h3 style={{ fontWeight: 'bold', marginBottom: '12px', color: '#164e63', fontSize: '18px' }}> Partial Return History</h3>
             {invoiceData.partialReturnHistory.map((entry: any, idx: number) => {
-              const baseSubtotal = (entry.returnedItems || []).reduce((s: number, ri: any) => s + (parseFloat(ri.partialAmount) || 0), 0)
-              const cgstAmt = baseSubtotal * ((invoiceData.cgstRate || 0) / 100)
-              const sgstAmt = baseSubtotal * ((invoiceData.sgstRate || 0) / 100)
-              const ugstAmt = baseSubtotal * ((invoiceData.ugstRate || 0) / 100)
-              const igstAmt = baseSubtotal * ((invoiceData.igstRate || 0) / 100)
-              const eventTotal = baseSubtotal + cgstAmt + sgstAmt + ugstAmt + igstAmt
-              const collected = typeof entry.partialPayment === 'number' ? entry.partialPayment : 0
-              const diff = collected - eventTotal
               return (
               <div key={idx} style={{ marginBottom: '16px' }}>
                 <div style={{ display: 'flex', gap: '16px', marginBottom: '8px', fontSize: '13px' }}>
-                  <div><strong>Date:</strong> {entry.returnDate || '-'}</div>
+                  <div><strong>Date:</strong> {formatDate(entry.returnDate)}</div>
                   {typeof entry.partialPayment === 'number' && (
                     <div><strong>Partial Payment:</strong> ₹{(entry.partialPayment || 0).toLocaleString()}</div>
                   )}
@@ -498,21 +545,7 @@ export default function FullSettlement() {
                         ))}
                       </tbody>
                     </table>
-                    {/* Per-event totals breakdown */}
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', marginTop: '10px', fontSize: '12px' }}>
-                      <div><strong>Base:</strong> ₹{baseSubtotal.toLocaleString()}</div>
-                      {invoiceData.cgstRate ? <div><strong>CGST {invoiceData.cgstRate}%:</strong> ₹{cgstAmt.toLocaleString()}</div> : null}
-                      {invoiceData.sgstRate ? <div><strong>SGST {invoiceData.sgstRate}%:</strong> ₹{sgstAmt.toLocaleString()}</div> : null}
-                      {invoiceData.ugstRate ? <div><strong>UGST {invoiceData.ugstRate}%:</strong> ₹{ugstAmt.toLocaleString()}</div> : null}
-                      {invoiceData.igstRate ? <div><strong>IGST {invoiceData.igstRate}%:</strong> ₹{igstAmt.toLocaleString()}</div> : null}
-                      <div><strong>Event Total:</strong> ₹{eventTotal.toLocaleString()}</div>
-                      <div><strong>Collected:</strong> ₹{collected.toLocaleString()}</div>
-                      {diff !== 0 && (
-                        <div style={{ fontWeight: 600, color: diff > 0 ? '#059669' : '#dc2626' }}>
-                          {diff > 0 ? `Applied to outstanding: ₹${diff.toLocaleString()}` : `Remaining due: ₹${Math.abs(diff).toLocaleString()}`}
-                        </div>
-                      )}
-                    </div>
+                    {/* Per-event totals breakdown removed for cleaner Full Settlement view */}
                   </div>
                 ) : (
                   <div style={{ fontSize: '12px', color: '#64748b' }}>No returned items recorded in this entry.</div>
@@ -625,26 +658,40 @@ export default function FullSettlement() {
             <h3 style={{ fontWeight: "bold", marginBottom: "16px", color: "#0c4a6e", fontSize: "18px" }}>Final Settlement Payment</h3>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px", fontSize: "14px" }}>
               <div>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
-                  <span style={{ fontWeight: 600 }}>Advance Amount:</span>
-                  <span style={{ fontWeight: "bold", color: "#059669" }}>₹{(parseFloat(String(invoiceData.paymentDetails?.advanceAmount || 0)) || 0).toLocaleString()}</span>
-                </div>
+                {(() => {
+                  const originalAdvance = parseFloat(String(invoiceData.paymentDetails?.originalAdvanceAmount ?? invoiceData.paymentDetails?.advanceAmount ?? 0)) || 0
+                  const remainingAdvance = parseFloat(String(invoiceData.paymentDetails?.advanceAmount || 0)) || 0
+                  const paidSoFarInclAdvance = originalAdvance + (invoiceData.paymentDetails?.paidAmount || 0)
+                  return (
+                    <>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
+                        <span style={{ fontWeight: 600 }}>Advance Taken (Original):</span>
+                        <span style={{ fontWeight: "bold", color: "#059669" }}>₹{originalAdvance.toLocaleString()}</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
+                        <span style={{ fontWeight: 600 }}>Advance Remaining:</span>
+                        <span style={{ fontWeight: "bold", color: "#16a34a" }}>₹{remainingAdvance.toLocaleString()}</span>
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "12px" }}>
+                        <span style={{ fontWeight: 600 }}>Total Paid So Far (incl. Advance):</span>
+                        <span style={{ fontWeight: "bold", color: "#2563eb" }}>₹{paidSoFarInclAdvance.toLocaleString()}</span>
+                      </div>
+                    </>
+                  )
+                })()}
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "12px" }}>
-                  <span style={{ fontWeight: 600 }}>Total Paid So Far (Advance + Partial):</span>
-                  <span style={{ fontWeight: "bold", color: "#2563eb" }}>₹{(((parseFloat(String(invoiceData.paymentDetails?.advanceAmount || 0)) || 0) + (invoiceData.paymentDetails?.paidAmount || 0)) || 0).toLocaleString()}</span>
-                </div>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "12px" }}>
-                  <span style={{ fontWeight: "600" }}>Current Outstanding:</span>
+                  <span style={{ fontWeight: "600" }}>Outstanding (from previous invoices):</span>
                   <span style={{ fontWeight: "bold", fontSize: "18px", color: "#dc2626" }}>₹{(invoiceData.paymentDetails?.outstandingAmount || 0).toLocaleString()}</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
                   <span style={{ fontWeight: 600 }}>Damage Charges (Total):</span>
                   <span style={{ fontWeight: "bold", color: "#b45309" }}>₹{(totalDamageCharges || 0).toLocaleString()}</span>
                 </div>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "16px" }}>
-                  <span style={{ fontWeight: 600 }}>Outstanding + Damages:</span>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
+                  <span style={{ fontWeight: 600 }}>Amount Due Now (Outstanding + Damages):</span>
                   <span style={{ fontWeight: "bold", color: "#7c3aed" }}>₹{(((invoiceData.paymentDetails?.outstandingAmount || 0) + (totalDamageCharges || 0)) || 0).toLocaleString()}</span>
                 </div>
+                {/* Removed 'Final Amount (This Invoice)' to avoid confusion in Full Settlement */}
                 
                 <div style={{ marginBottom: "16px" }}>
                   <label style={{ display: "block", marginBottom: "6px", fontWeight: "600", color: "#0c4a6e" }}>Final Payment Amount:</label>
@@ -672,6 +719,11 @@ export default function FullSettlement() {
                     />
                   ) : (
                     <div style={{ fontWeight: 700 }}>₹{(finalPayment || 0).toLocaleString()}</div>
+                  )}
+                  {isSaveInvalid && (
+                    <div style={{ marginTop: '6px', fontSize: '12px', color: '#dc2626' }}>
+                      Enter 0 to ₹{Math.max(0, ((invoiceData.paymentDetails?.outstandingAmount || 0) + (totalDamageCharges || 0))).toLocaleString()}
+                    </div>
                   )}
                 </div>
               </div>
@@ -703,6 +755,8 @@ export default function FullSettlement() {
         isPhysicalCopy={isPhysicalCopy}
         setIsPhysicalCopy={setIsPhysicalCopy}
         isSaving={isSaving}
+        // Disable Save when invalid amount entered (without showing Saving...)
+        saveDisabled={isSaveInvalid}
         showEditButton={true}
       />
     </div>

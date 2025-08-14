@@ -96,6 +96,7 @@ const InvoiceSchema = new mongoose.Schema({
   paymentDetails: {
     totalRentAmount: { type: Number, required: false, default: 0 },
     advanceAmount: { type: mongoose.Schema.Types.Mixed, required: false, default: 0 }, // Can be string or number
+    originalAdvanceAmount: { type: Number, required: false, default: 0 },
     paidAmount: { type: Number, required: false, default: 0 },
     outstandingAmount: { type: Number, required: false, default: 0 },
     refundAmount: { type: Number, required: false, default: 0 },

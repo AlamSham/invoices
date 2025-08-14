@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useEffect, useState, useRef, Fragment } from 'react'
 import { useNavigate, useParams } from "react-router-dom"
 import axios from "axios"
 import { ArrowLeft } from "lucide-react"
@@ -33,6 +33,48 @@ export default function RentalDetails() {
   })
 
   const [invoiceData, setInvoiceData] = useState<RentalInvoiceData | null>(null)
+  // Helper to infer invoice type from data
+  const getInvoiceTypeFromData = (data: RentalInvoiceData): 'ADVANCE' | 'PARTIAL' | 'FULL' => {
+    if (data.invoiceType) {
+      return data.invoiceType as 'ADVANCE' | 'PARTIAL' | 'FULL'
+    }
+    if (data.invoiceNumber?.startsWith('ADV-')) return 'ADVANCE'
+    if (data.invoiceNumber?.startsWith('PARTIAL-')) return 'PARTIAL'
+    if (data.invoiceNumber?.startsWith('FULL-')) return 'FULL'
+    return 'ADVANCE' // Default
+  }
+  // Compute invoice type using helper; ensure proper union type
+  const invoiceType: 'ADVANCE' | 'PARTIAL' | 'FULL' | undefined = invoiceData
+    ? getInvoiceTypeFromData(invoiceData)
+    : undefined
+  // Wrapper ref around RentalForm, used to hide narrative rows for FULL invoices
+  const rentalFormWrapperRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (invoiceType === 'FULL' && rentalFormWrapperRef.current) {
+      const scope = rentalFormWrapperRef.current
+      // Remove narrative rows
+      const tds = scope.querySelectorAll('td[colspan]')
+      tds.forEach((td) => {
+        const text = (td.textContent || '').toLowerCase()
+        if (text.includes('issued:') || text.includes('returned:') || text.includes('remaining:')) {
+          const tr = td.closest('tr')
+          if (tr && tr.parentElement) {
+            tr.parentElement.removeChild(tr)
+          }
+        }
+      })
+
+      // Remove the Items table (identified by header containing 'S.No.')
+      const tables = Array.from(scope.querySelectorAll('table'))
+      tables.forEach((tbl) => {
+        const ths = Array.from(tbl.querySelectorAll('thead th'))
+        const hasSNoHeader = ths.some((th) => (th.textContent || '').trim().toLowerCase() === 's.no.')
+        if (hasSNoHeader && tbl.parentElement) {
+          tbl.parentElement.removeChild(tbl)
+        }
+      })
+    }
+  }, [invoiceType, invoiceData])
 
   // Fetch invoice details
   const fetchInvoiceDetails = async () => {
@@ -78,18 +120,7 @@ export default function RentalDetails() {
     // For viewing existing invoices, amounts are already calculated
   }
 
-  const getInvoiceTypeFromData = (data: RentalInvoiceData): 'ADVANCE' | 'PARTIAL' | 'FULL' => {
-    if (data.invoiceType) {
-      return data.invoiceType as 'ADVANCE' | 'PARTIAL' | 'FULL'
-    }
-    
-    // Fallback logic based on invoice number prefix
-    if (data.invoiceNumber?.startsWith('ADV-')) return 'ADVANCE'
-    if (data.invoiceNumber?.startsWith('PARTIAL-')) return 'PARTIAL'
-    if (data.invoiceNumber?.startsWith('FULL-')) return 'FULL'
-    
-    return 'ADVANCE' // Default
-  }
+  
 
   // Helpers for timeline
   const fmtDate = (d?: string) => {
@@ -381,16 +412,129 @@ export default function RentalDetails() {
           updateInvoiceData={updateInvoiceData}
           invoiceType={getInvoiceTypeFromData(invoiceData)}
         />
-
-        <RentalForm
-          invoiceData={invoiceData}
-          isEditingMode={isEditingMode}
-          updateInvoiceData={updateInvoiceData}
-          calculateAmounts={calculateAmounts}
-          companyDetails={companyDetails}
-          isPhysicalCopy={isPhysicalCopy}
-          invoiceType={getInvoiceTypeFromData(invoiceData)}
-        />
+        <div ref={rentalFormWrapperRef}>
+          <RentalForm
+            invoiceData={invoiceData}
+            isEditingMode={isEditingMode}
+            updateInvoiceData={updateInvoiceData}
+            calculateAmounts={calculateAmounts}
+            companyDetails={companyDetails}
+            isPhysicalCopy={isPhysicalCopy}
+            invoiceType={invoiceType}
+            replaceItemsWithSummary={invoiceType === 'FULL' ? (
+              <div id="item-movement-summary" style={{
+                backgroundColor: '#f8fafc',
+                padding: '16px',
+                borderRadius: '8px',
+                marginTop: '12px',
+                border: '2px solid #e2e8f0'
+              }}>
+                <h3 style={{ fontWeight: 'bold', marginBottom: 10, color: '#0f172a', fontSize: 16 }}>Item Movement Summary</h3>
+                {(() => {
+                  type Seg = { qty: number; start?: string; end?: string }
+                  type Ret = { date: string; qty: number }
+                  const byProduct = new Map<string, Seg[]>()
+                  const earliestStartByProduct = new Map<string, string>()
+                  const earliestQtyByProduct = new Map<string, number>()
+                  const latestEndByProduct = new Map<string, string>()
+                  ;(invoiceData.items || []).forEach((it: any) => {
+                    const name = it.productName || '-'
+                    const qty = typeof it.rentedQuantity === 'string' ? parseFloat(it.rentedQuantity) || 0 : (it.rentedQuantity || 0)
+                    const segs = byProduct.get(name) || []
+                    segs.push({ qty, start: it.startDate, end: it.endDate })
+                    byProduct.set(name, segs)
+                    if (it.startDate) {
+                      const cur = earliestStartByProduct.get(name)
+                      if (!cur || new Date(it.startDate) < new Date(cur)) {
+                        earliestStartByProduct.set(name, it.startDate)
+                        earliestQtyByProduct.set(name, qty)
+                      }
+                    }
+                    if (it.endDate) {
+                      const curEnd = latestEndByProduct.get(name)
+                      if (!curEnd || new Date(it.endDate) > new Date(curEnd)) {
+                        latestEndByProduct.set(name, it.endDate)
+                      }
+                    }
+                  })
+                  const returnsMap = new Map<string, Ret[]>()
+                  const headerDate = (invoiceData as any).Date || (invoiceData as any).createdAt || ''
+                  ;((invoiceData as any).partialReturnHistory || []).forEach((entry: any) => {
+                    const retDate = entry.returnDate || entry.createdAt || headerDate
+                    if (Array.isArray(entry.returnedItems)) {
+                      entry.returnedItems.forEach((ri: any) => {
+                        const name = ri.productName || '-'
+                        const qty = typeof ri.returnedQuantity === 'string' ? parseFloat(ri.returnedQuantity) || 0 : (ri.returnedQuantity || 0)
+                        const arr = returnsMap.get(name) || []
+                        arr.push({ date: retDate, qty })
+                        returnsMap.set(name, arr)
+                      })
+                    }
+                  })
+                  const productNames = Array.from(new Set<string>([...byProduct.keys(), ...returnsMap.keys()]))
+                  if (!productNames.length) {
+                    return <div style={{ fontSize: 12, color: '#64748b' }}>No movement data.</div>
+                  }
+                  return (
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                        <thead>
+                          <tr style={{ backgroundColor: '#e2e8f0' }}>
+                            <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #cbd5e1' }}>Event</th>
+                            <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #cbd5e1' }}>Product</th>
+                            <th style={{ textAlign: 'right', padding: 8, borderBottom: '1px solid #cbd5e1' }}>Qty</th>
+                            <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #cbd5e1' }}>Date / Period</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {productNames.map((name) => {
+                            const segs = byProduct.get(name) || []
+                            const earliestStart = earliestStartByProduct.get(name)
+                            const issuedQty = earliestQtyByProduct.get(name) ?? (segs[0]?.qty || 0)
+                            const retArr = (returnsMap.get(name) || []).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+                            const totalReturned = retArr.reduce((s, r) => s + (r.qty || 0), 0)
+                            const remainingQty = Math.max(0, (issuedQty || 0) - (totalReturned || 0))
+                            const lastReturn = retArr.length ? retArr[retArr.length - 1].date : ''
+                            const dayAfter = lastReturn ? (() => { const d = new Date(lastReturn); d.setDate(d.getDate() + 1); return d.toISOString().split('T')[0] })() : ''
+                            const latestEnd = latestEndByProduct.get(name) || (segs.length ? segs[segs.length - 1].end || '' : '')
+                            const extDays = (dayAfter && latestEnd) ? daysBetween(dayAfter, latestEnd) : 0
+                            return (
+                              <Fragment key={`ims-inline-${name}`}>
+                                <tr key={`${name}-issued`}>
+                                  <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>ISSUED</td>
+                                  <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{name}</td>
+                                  <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', textAlign: 'right' }}>{issuedQty}</td>
+                                  <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{earliestStart ? new Date(earliestStart).toLocaleDateString('en-GB') : '-'}</td>
+                                </tr>
+                                {retArr.map((r, idx) => (
+                                  <tr key={`${name}-ret-${idx}`}>
+                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>PARTIAL RETURN</td>
+                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{name}</td>
+                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', textAlign: 'right' }}>{r.qty}</td>
+                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{new Date(r.date).toLocaleDateString('en-GB')}</td>
+                                  </tr>
+                                ))}
+                                {(remainingQty > 0 && latestEnd) && (
+                                  <tr key={`${name}-ext`}>
+                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>EXTENDED</td>
+                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{name}</td>
+                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', textAlign: 'right' }}>{remainingQty}</td>
+                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{(dayAfter ? new Date(dayAfter).toLocaleDateString('en-GB') : '-') + ' → ' + (latestEnd ? new Date(latestEnd).toLocaleDateString('en-GB') : '-')}{extDays ? ` (${extDays} days)` : ''}</td>
+                                  </tr>
+                                )}
+                              </Fragment>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )
+                })()}
+              </div>
+            ) : undefined}
+          />
+        </div>
+        
 
         {/* Partial Return History (Read-only) */}
         {(invoiceData.partialReturnHistory && invoiceData.partialReturnHistory.length > 0) && (
@@ -442,48 +586,47 @@ export default function RentalDetails() {
           </div>
         )}
 
-        {/* Unified Rental Activity Timeline (FULL invoices) */}
-        {getInvoiceTypeFromData(invoiceData) === 'FULL' && (
-          <div style={{ backgroundColor: '#eef2ff', padding: 20, borderRadius: 8, marginTop: 16, border: '2px solid #c7d2fe' }}>
-            <h3 style={{ fontWeight: 'bold', marginBottom: 12, color: '#1e3a8a', fontSize: 18 }}>Rental Activity Timeline</h3>
-            {(() => {
-              type Remaining = { qty: number; start?: string; end?: string; rate: number }
-              type ReturnEv = { date: string; qty: number; amount?: number }
-              const byProduct = new Map<string, Remaining>()
-              const segsByProduct = new Map<string, Remaining[]>()
-              const earliestStartByProduct = new Map<string, string>()
-              const earliestQtyByProduct = new Map<string, number>()
-              // Aggregate multiple lines per product to avoid inflation from extensions/splits
-              ;(invoiceData.items || []).forEach((it: any) => {
-                const name = it.productName || '-'
-                const qty = typeof it.rentedQuantity === 'string' ? parseFloat(it.rentedQuantity) || 0 : (it.rentedQuantity || 0)
-                const rate = typeof it.dailyRate === 'string' ? parseFloat(it.dailyRate) || 0 : (it.dailyRate || 0)
-                const prev = byProduct.get(name)
-                if (!prev) {
-                  byProduct.set(name, { qty, start: it.startDate, end: it.endDate, rate })
-                  segsByProduct.set(name, [{ qty, start: it.startDate, end: it.endDate, rate }])
+        {/* Rental Activity Timeline */}
+        <div style={{ backgroundColor: '#eef2ff', padding: 20, borderRadius: 8, marginTop: 16, border: '2px solid #c7d2fe' }}>
+          <h3 style={{ fontWeight: 'bold', marginBottom: 12, color: '#1e3a8a', fontSize: 18 }}>Rental Activity Timeline</h3>
+          {(() => {
+            type Remaining = { qty: number; start?: string; end?: string; rate: number }
+            type ReturnEv = { date: string; qty: number; amount?: number }
+            const byProduct = new Map<string, Remaining>()
+            const segsByProduct = new Map<string, Remaining[]>()
+            const earliestStartByProduct = new Map<string, string>()
+            const earliestQtyByProduct = new Map<string, number>()
+            // Aggregate multiple lines per product to avoid inflation from extensions/splits
+            ;(invoiceData.items || []).forEach((it: any) => {
+              const name = it.productName || '-'
+              const qty = typeof it.rentedQuantity === 'string' ? parseFloat(it.rentedQuantity) || 0 : (it.rentedQuantity || 0)
+              const rate = typeof it.dailyRate === 'string' ? parseFloat(it.dailyRate) || 0 : (it.dailyRate || 0)
+              const prev = byProduct.get(name)
+              if (!prev) {
+                byProduct.set(name, { qty, start: it.startDate, end: it.endDate, rate })
+                segsByProduct.set(name, [{ qty, start: it.startDate, end: it.endDate, rate }])
+                if (it.startDate) {
+                  earliestStartByProduct.set(name, it.startDate)
+                  earliestQtyByProduct.set(name, qty)
+                }
+              } else {
+                // keep earliest start, latest end, and maximum qty seen
+                const earliestStart = prev.start && it.startDate ? (new Date(it.startDate) < new Date(prev.start) ? it.startDate : prev.start) : (prev.start || it.startDate)
+                const latestEnd = prev.end && it.endDate ? (new Date(it.endDate) > new Date(prev.end) ? it.endDate : prev.end) : (prev.end || it.endDate)
+                byProduct.set(name, { qty: Math.max(prev.qty || 0, qty || 0), start: earliestStart, end: latestEnd, rate: prev.rate || rate })
+                const arr = segsByProduct.get(name) || []
+                arr.push({ qty, start: it.startDate, end: it.endDate, rate })
+                segsByProduct.set(name, arr)
+                // track earliest issuance qty by earliest start
+                const curEarliest = earliestStartByProduct.get(name)
+                if (!curEarliest || (it.startDate && new Date(it.startDate) < new Date(curEarliest))) {
                   if (it.startDate) {
                     earliestStartByProduct.set(name, it.startDate)
                     earliestQtyByProduct.set(name, qty)
                   }
-                } else {
-                  // keep earliest start, latest end, and maximum qty seen
-                  const earliestStart = prev.start && it.startDate ? (new Date(it.startDate) < new Date(prev.start) ? it.startDate : prev.start) : (prev.start || it.startDate)
-                  const latestEnd = prev.end && it.endDate ? (new Date(it.endDate) > new Date(prev.end) ? it.endDate : prev.end) : (prev.end || it.endDate)
-                  byProduct.set(name, { qty: Math.max(prev.qty || 0, qty || 0), start: earliestStart, end: latestEnd, rate: prev.rate || rate })
-                  const arr = segsByProduct.get(name) || []
-                  arr.push({ qty, start: it.startDate, end: it.endDate, rate })
-                  segsByProduct.set(name, arr)
-                  // track earliest issuance qty by earliest start
-                  const curEarliest = earliestStartByProduct.get(name)
-                  if (!curEarliest || (it.startDate && new Date(it.startDate) < new Date(curEarliest))) {
-                    if (it.startDate) {
-                      earliestStartByProduct.set(name, it.startDate)
-                      earliestQtyByProduct.set(name, qty)
-                    }
-                  }
                 }
-              })
+              }
+            })
               const returnsMap = new Map<string, ReturnEv[]>()
               const lastReturnMap = new Map<string, string>()
               const headerDate = (invoiceData as any).Date || (invoiceData as any).createdAt || ''
@@ -517,7 +660,9 @@ export default function RentalDetails() {
                         <th style={{ textAlign: 'right', padding: 8, borderBottom: '1px solid #c7d2fe' }}>Qty</th>
                         <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #c7d2fe' }}>Date / Period</th>
                         <th style={{ textAlign: 'right', padding: 8, borderBottom: '1px solid #c7d2fe' }}>Days</th>
-                        <th style={{ textAlign: 'right', padding: 8, borderBottom: '1px solid #c7d2fe' }}>Amount (₹)</th>
+                        {getInvoiceTypeFromData(invoiceData) !== 'FULL' && (
+                          <th style={{ textAlign: 'right', padding: 8, borderBottom: '1px solid #c7d2fe' }}>Amount (₹)</th>
+                        )}
                         <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #c7d2fe' }}>Notes</th>
                       </tr>
                     </thead>
@@ -527,6 +672,8 @@ export default function RentalDetails() {
                         const retArr = (returnsMap.get(name) || []).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
                         // Issued should reflect the earliest issuance quantity (avoid extension inflation)
                         const issuedQty = earliestQtyByProduct.get(name) ?? (rem?.qty || 0)
+                        const totalReturned = retArr.reduce((s, r) => s + (r.qty || 0), 0)
+                        const remainingQtyDisplay = Math.max(0, (issuedQty || 0) - (totalReturned || 0))
                         const rows: any[] = []
                         // Issued row (just an event, no amount)
                         rows.push({
@@ -546,11 +693,11 @@ export default function RentalDetails() {
                           const startForReturned = earliestStartByProduct.get(name) || rem?.start
                           const daysRet = startForReturned ? daysBetween(startForReturned, ev.date) : 0
                           rows.push({
-                            kind: 'PARTIAL_RETURN',
+                            kind: 'PARTIAL RETURN',
                             qty: ev.qty,
                             dateText: new Date(ev.date).toLocaleDateString('en-GB'),
                             days: daysRet || '-',
-                            amount: (ev.amount || 0) > 0 ? `₹${(ev.amount || 0).toLocaleString()}` : '-',
+                            amount: '-',
                             notes: 'Partial return'
                           })
                         })
@@ -568,14 +715,13 @@ export default function RentalDetails() {
                             }
                             const accrualEnd = seg.end || ''
                             const daysRemain = accrualStart && accrualEnd ? daysBetween(accrualStart, accrualEnd) : 0
-                            const remainAmt = (seg.qty || 0) * (seg.rate || 0) * (daysRemain || 0)
                             rows.push({
                               kind: 'REMAINING',
-                              qty: seg.qty,
+                              qty: remainingQtyDisplay,
                               dateText: (accrualStart ? new Date(accrualStart).toLocaleDateString('en-GB') : '-') + ' → ' + (accrualEnd ? new Date(accrualEnd).toLocaleDateString('en-GB') : '-'),
                               days: daysRemain || '-',
-                              amount: `₹${(remainAmt || 0).toLocaleString()}`,
-                              notes: 'Remaining accrual'
+                              amount: '-',
+                              notes: lastReturn ? `Remaining accrual (after return on ${new Date(lastReturn).toLocaleDateString('en-GB')})` : 'Remaining accrual'
                             })
                           })
                         }
@@ -587,19 +733,21 @@ export default function RentalDetails() {
                               <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', textAlign: 'right' }}>{r.qty}</td>
                               <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{r.dateText}</td>
                               <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', textAlign: 'right' }}>{r.days}</td>
-                              <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', textAlign: 'right' }}>{r.amount}</td>
+                              {getInvoiceTypeFromData(invoiceData) !== 'FULL' && (
+                                <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', textAlign: 'right' }}>{r.amount}</td>
+                              )}
                               <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{r.notes}</td>
                             </tr>
                           ))
                         )
                       })}
+                      {/* FINAL SETTLEMENT timeline row removed per revert request */}
                     </tbody>
                   </table>
                 </div>
               )
             })()}
           </div>
-        )}
 
         {/* Legacy Logs section: removed for FULL invoices (timeline replaces); logs below are conditioned */}
 
@@ -742,27 +890,65 @@ export default function RentalDetails() {
             <h3 style={{ fontWeight: 'bold', marginBottom: '12px', color: '#0c4a6e', fontSize: '18px' }}>Full Settlement Summary</h3>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', fontSize: '14px' }}>
               <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                  <span style={{ fontWeight: 600 }}>Total Rent Amount:</span>
-                  <span style={{ fontWeight: 'bold' }}>₹{(invoiceData.paymentDetails?.totalRentAmount || 0).toLocaleString()}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                  <span style={{ fontWeight: 600 }}>Paid Amount:</span>
-                  <span style={{ fontWeight: 'bold' }}>₹{(invoiceData.paymentDetails?.paidAmount || 0).toLocaleString()}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                  <span style={{ fontWeight: 600 }}>Damage Charges:</span>
-                  <span style={{ fontWeight: 'bold', color: '#b45309' }}>₹{(invoiceData.paymentDetails?.damageCharges || 0).toLocaleString()}</span>
-                </div>
+                {(() => {
+                  const finalAmt = Number((invoiceData.paymentDetails as any)?.finalAmount || 0)
+                  const originalAdvance = Number((invoiceData.paymentDetails as any)?.originalAdvanceAmount || 0)
+                  const partialPaid = ((invoiceData.partialReturnHistory || []) as any[]).reduce((s, e: any) => s + (Number(e?.partialPayment || 0)), 0)
+                  const damage = Number((invoiceData.paymentDetails as any)?.damageCharges || 0)
+                  const computedFinalPayment = Math.max(0, finalAmt - (originalAdvance + partialPaid))
+                  return (
+                    <>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                        <span style={{ fontWeight: 600 }}>Final Amount:</span>
+                        <span style={{ fontWeight: 'bold' }}>₹{finalAmt.toLocaleString()}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                        <span style={{ fontWeight: 600 }}>Advance Taken (Original):</span>
+                        <span style={{ fontWeight: 'bold', color: '#059669' }}>₹{originalAdvance.toLocaleString()}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                        <span style={{ fontWeight: 600 }}>Partial Payments Collected:</span>
+                        <span style={{ fontWeight: 'bold', color: '#2563eb' }}>₹{partialPaid.toLocaleString()}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                        <span style={{ fontWeight: 600 }}>Damage Charges:</span>
+                        <span style={{ fontWeight: 'bold', color: '#b45309' }}>₹{damage.toLocaleString()}</span>
+                      </div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
+                        <span style={{ fontWeight: 600 }}>Final Payment (at Settlement):</span>
+                        <span style={{ fontWeight: 'bold', color: '#0f766e' }}>₹{computedFinalPayment.toLocaleString()}</span>
+                      </div>
+                    </>
+                  )
+                })()}
               </div>
               <div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                  <span style={{ fontWeight: 600 }}>Final Amount:</span>
-                  <span style={{ fontWeight: 'bold' }}>₹{(invoiceData.paymentDetails?.finalAmount || 0).toLocaleString()}</span>
-                </div>
+                {/* Right side now shows Outstanding and Status only */}
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
                   <span style={{ fontWeight: 600 }}>Outstanding:</span>
-                  <span style={{ fontWeight: 'bold', color: (invoiceData.paymentDetails?.outstandingAmount || 0) === 0 ? '#059669' : '#dc2626' }}>₹{(invoiceData.paymentDetails?.outstandingAmount || 0).toLocaleString()}</span>
+                  <span style={{ fontWeight: 'bold', color: (() => {
+                    const finalAmt = Math.max(0, (invoiceData.paymentDetails?.finalAmount ?? 0))
+                    const paid = Math.max(0, (invoiceData.paymentDetails?.paidAmount ?? 0))
+                    const backendOut = invoiceData.paymentDetails?.outstandingAmount
+                    let display = backendOut !== undefined && backendOut !== null ? backendOut : (finalAmt - paid)
+                    // For FULL settlement, if completed or fully paid, force 0
+                    if (getInvoiceTypeFromData(invoiceData) === 'FULL' && (invoiceData.rentalDetails?.status === 'COMPLETED' || paid >= finalAmt)) {
+                      display = 0
+                    }
+                    return Math.max(0, display) === 0 ? '#059669' : '#dc2626'
+                  })() }}>
+                    ₹{(() => {
+                      const finalAmt = Math.max(0, (invoiceData.paymentDetails?.finalAmount ?? 0))
+                      const paid = Math.max(0, (invoiceData.paymentDetails?.paidAmount ?? 0))
+                      const backendOut = invoiceData.paymentDetails?.outstandingAmount
+                      let display = backendOut !== undefined && backendOut !== null ? backendOut : (finalAmt - paid)
+                      // For FULL settlement, if completed or fully paid, force 0
+                      if (getInvoiceTypeFromData(invoiceData) === 'FULL' && (invoiceData.rentalDetails?.status === 'COMPLETED' || paid >= finalAmt)) {
+                        display = 0
+                      }
+                      return Math.max(0, display)
+                    })().toLocaleString()}
+                  </span>
                 </div>
                 {invoiceData.rentalDetails?.status && (
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
@@ -772,6 +958,7 @@ export default function RentalDetails() {
                 )}
               </div>
             </div>
+            {/* Returned at Final Settlement table removed per revert request */}
           </div>
         )}
       </div>

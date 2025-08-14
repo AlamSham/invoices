@@ -80,6 +80,7 @@ export interface RentalInvoiceData {
   paymentDetails?: {
     totalRentAmount: number
     advanceAmount: string | number
+    originalAdvanceAmount?: number
     paidAmount: number
     outstandingAmount: number
     refundAmount: number

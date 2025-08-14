@@ -1,6 +1,7 @@
 "use client"
 
 import { Plus, Minus, Phone, Mail } from "lucide-react"
+import { Fragment } from "react"
 import type { CompanyDetails, RentalInvoiceData } from "./rental-types"
 
 interface RentalFormProps {
@@ -11,6 +12,8 @@ interface RentalFormProps {
   companyDetails: CompanyDetails
   isPhysicalCopy: boolean
   invoiceType?: 'ADVANCE' | 'PARTIAL' | 'FULL'
+  originalAdvanceAmount?: number
+  replaceItemsWithSummary?: React.ReactNode
 }
 
 export default function RentalForm({
@@ -21,6 +24,8 @@ export default function RentalForm({
   companyDetails,
   // isPhysicalCopy,
   invoiceType = 'ADVANCE',
+  originalAdvanceAmount,
+  replaceItemsWithSummary,
 }: RentalFormProps) {
 
   // Helpers for date math and formatting
@@ -485,6 +490,10 @@ export default function RentalForm({
         </div>
 
         <div style={{ overflowX: "auto" }}>
+          {replaceItemsWithSummary ? (
+            // When provided, show the passed summary instead of Items table
+            <div>{replaceItemsWithSummary}</div>
+          ) : (
           <table style={{ width: "100%", borderCollapse: "collapse", border: "1px solid #d1d5db" }}>
             <thead>
               <tr style={{ backgroundColor: "#f9fafb" }}>
@@ -503,27 +512,15 @@ export default function RentalForm({
                 <th style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "center", fontSize: "11px", fontWeight: "600" }}>
                   Start Date
                 </th>
-                {invoiceType === 'PARTIAL' ? (
-                  <th style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "center", fontSize: "11px", fontWeight: "600" }}>
-                    Partial Return Date
-                  </th>
-                ) : (
-                  <th style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "center", fontSize: "11px", fontWeight: "600" }}>
-                    End Date
-                  </th>
-                )}
+                <th style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "center", fontSize: "11px", fontWeight: "600" }}>
+                  End Date
+                </th>
                 <th style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "center", fontSize: "11px", fontWeight: "600" }}>
                   Days
                 </th>
-                {invoiceType === 'PARTIAL' ? (
-                  <th style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "center", fontSize: "11px", fontWeight: "600" }}>
-                    Return Quantity
-                  </th>
-                ) : (
-                  <th style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "center", fontSize: "11px", fontWeight: "600" }}>
-                    HSN Code
-                  </th>
-                )}
+                <th style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "center", fontSize: "11px", fontWeight: "600" }}>
+                  HSN Code
+                </th>
                 <th style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "right", fontSize: "11px", fontWeight: "600" }}>
                   Amount (₹)
                 </th>
@@ -536,8 +533,8 @@ export default function RentalForm({
             </thead>
             <tbody>
               {invoiceData.items.map((item, index) => (
-                <>
-                  <tr key={index}>
+                <Fragment key={`item-${index}`}>
+                  <tr>
                     <td style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "center", fontSize: "11px" }}>
                       {index + 1}
                     </td>
@@ -767,12 +764,12 @@ export default function RentalForm({
                   <td style={{ border: "1px solid #d1d5db", padding: "6px", textAlign: "center", fontSize: "11px" }}>
                     {invoiceType === 'PARTIAL' ? (
                       isEditingMode ? (
+                        // Keep edit-mode input for Partial Return Date as-is
                         <input
                           type="date"
                           value={item.partialReturnDate || ""}
                           onChange={(e) => {
                             const newValue = e.target.value
-                            // Calculate days if both dates are set
                             let calculatedDays = item.totalDays
                             if (item.startDate && newValue) {
                               const start = new Date(item.startDate)
@@ -780,7 +777,6 @@ export default function RentalForm({
                               const diffTime = Math.abs(end.getTime() - start.getTime())
                               calculatedDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1
                             }
-                            // Update both fields in single operation to prevent UI delay
                             const newItems = [...invoiceData.items]
                             newItems[index] = {
                               ...newItems[index],
@@ -800,16 +796,19 @@ export default function RentalForm({
                           }}
                         />
                       ) : (
-                        item.partialReturnDate ? new Date(item.partialReturnDate).toLocaleDateString('en-GB') : "Not Set"
+                        // Read-only: prefer End Date when present, otherwise show Partial Return Date
+                        item.endDate
+                          ? new Date(item.endDate).toLocaleDateString('en-GB')
+                          : (item.partialReturnDate ? new Date(item.partialReturnDate).toLocaleDateString('en-GB') : "Not Set")
                       )
                     ) : (
                       isEditingMode ? (
+                        // Keep edit-mode input for End Date as-is
                         <input
                           type="date"
                           value={item.endDate || ""}
                           onChange={(e) => {
                             const newValue = e.target.value
-                            // Calculate days if both dates are set
                             let calculatedDays = item.totalDays
                             if (item.startDate && newValue) {
                               if (invoiceType === 'FULL') {
@@ -842,14 +841,12 @@ export default function RentalForm({
                                 calculatedDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1
                               }
                             }
-                            // Update both endDate and totalDays in one go
                             const newItems = [...invoiceData.items]
                             newItems[index] = {
                               ...newItems[index],
                               endDate: newValue,
                               totalDays: calculatedDays
                             }
-                            // Recalculate rent amount with new days
                             const quantity = typeof newItems[index].rentedQuantity === 'string' 
                               ? parseFloat(newItems[index].rentedQuantity) || 0 
                               : newItems[index].rentedQuantity || 0
@@ -902,7 +899,6 @@ export default function RentalForm({
                             const maxAllowed = Math.max(0, rentedQty - originalReturned)
                             const clamped = Math.max(0, Math.min(inputVal, maxAllowed))
 
-                            // Auto-set partialReturnDate if returning something and date empty
                             if (clamped > 0 && (!item.partialReturnDate || String(item.partialReturnDate).trim() === '')) {
                               const today = new Date().toISOString().split('T')[0]
                               updateItem(index, 'partialReturnDate', today)
@@ -919,7 +915,8 @@ export default function RentalForm({
                           placeholder="0"
                         />
                       ) : (
-                        item.returnedQuantity || "0"
+                        // Read-only: show HSN Code, not Return Quantity
+                        item.hsnCode || ""
                       )
                     ) : (
                       isEditingMode ? (
@@ -1003,7 +1000,9 @@ export default function RentalForm({
                           <div><strong style={{ color: '#111827' }}>{productName}</strong></div>
                           <div>Issued: {issuedQty} {item.startDate ? `on ${new Date(item.startDate).toLocaleDateString('en-GB')}` : ''}</div>
                           {events.map((ev, i) => (
-                            <div key={i} style={{ color: '#6b7280' }}>Returned: {ev.qty} on {new Date(ev.date).toLocaleDateString('en-GB')}</div>
+                            <div key={`${ev.date}-${ev.qty}-${i}`} style={{ color: '#6b7280' }}>
+                              Returned: {ev.qty} on {new Date(ev.date).toLocaleDateString('en-GB')}
+                            </div>
                           ))}
                           <div>Remaining: {remainingQty} accrues {accrualStartDisp} → {accrualEndDisp} {remainingDays ? `(${remainingDays} days)` : ''}</div>
                         </td>
@@ -1011,10 +1010,11 @@ export default function RentalForm({
                     )
                   })()
                 )}
-                </>
+                </Fragment>
               ))}
             </tbody>
             
+            {invoiceType !== 'FULL' && (
             <tfoot>
               {/* Subtotal */}
               <tr style={{ backgroundColor: "#f9fafb" }}>
@@ -1115,7 +1115,9 @@ export default function RentalForm({
                 })()
               )}
             </tfoot>
+            )}
           </table>
+          )}
         </div>
       </div>
 
@@ -1156,12 +1158,29 @@ export default function RentalForm({
                     <input
                       type="date"
                       value={item.endDate || ''}
+                      min={(accruesFrom || item.startDate || '') as string}
                       onChange={(e) => {
                         const newValue = e.target.value
                         updateItem(index, 'endDate', newValue)
                       }}
                       style={{ border: '1px solid #d1d5db', padding: 6, borderRadius: 4, width: 150 }}
                     />
+                    {(() => {
+                      const minDate = (accruesFrom || item.startDate) as string | undefined
+                      const end = item.endDate
+                      if (minDate && end) {
+                        const s = new Date(minDate)
+                        const e = new Date(end)
+                        if (e <= s) {
+                          return (
+                            <div style={{ color: '#dc2626', fontSize: 12, marginTop: 4 }}>
+                              End date must be after Accrues From (min: {minDate})
+                            </div>
+                          )
+                        }
+                      }
+                      return null
+                    })()}
                   </div>
                   <div>
                     <div style={{ fontSize: 12, color: '#6b7280' }}>Preview Days</div>
@@ -1304,8 +1323,18 @@ export default function RentalForm({
             <div>
               <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
                 <span style={{ fontWeight: "600" }}>Original Advance:</span>
-                <span style={{ fontWeight: "bold", fontSize: "16px", color: "#059669" }}>₹{(invoiceData.paymentDetails?.advanceAmount || 0).toLocaleString()}</span>
+                <span style={{ fontWeight: "bold", fontSize: "16px", color: "#059669" }}>
+                  ₹{(Number(originalAdvanceAmount ?? invoiceData.paymentDetails?.advanceAmount ?? 0)).toLocaleString()}
+                </span>
               </div>
+              {!isEditingMode && invoiceType === 'PARTIAL' && (
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
+                  <span style={{ fontWeight: "600" }}>Remaining Advance:</span>
+                  <span style={{ fontWeight: "bold", fontSize: "16px", color: "#b45309" }}>
+                    ₹{Number(invoiceData.paymentDetails?.advanceAmount || 0).toLocaleString()}
+                  </span>
+                </div>
+              )}
               
               {isEditingMode ? (
                 <div style={{ marginBottom: "12px" }}>
@@ -1347,7 +1376,24 @@ export default function RentalForm({
             </div>
             <div>
               {(() => {
-                // Compute outstanding. In PARTIAL edit mode, use estimated total (with preview) to match user's expectation.
+                // In PARTIAL view mode, prefer server-calculated outstanding.
+                if (invoiceType === 'PARTIAL' && !isEditingMode) {
+                  const backendOutstanding = invoiceData.paymentDetails?.outstandingAmount
+                  if (backendOutstanding !== undefined && backendOutstanding !== null) {
+                    return (
+                      <>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontWeight: "bold", fontSize: "16px" }}>
+                          <span>Remaining Outstanding:</span>
+                          <span style={{ color: "#dc2626" }}>₹{Number(backendOutstanding).toLocaleString()}</span>
+                        </div>
+                        <div style={{ fontSize: "12px", color: "#6b7280", fontStyle: "italic", backgroundColor: "#f0fdf4", padding: "8px", borderRadius: "4px", border: "1px solid #34d399" }}>
+                          Server-calculated outstanding
+                        </div>
+                      </>
+                    )
+                  }
+                }
+                // Compute estimated outstanding during edit.
                 let totalForOutstanding = invoiceData.totalAmount || 0
                 if (invoiceType === 'PARTIAL' && isEditingMode) {
                   const previewSum = (invoiceData.items || []).reduce((sum: number, item: any) => {
@@ -1378,11 +1424,11 @@ export default function RentalForm({
                 return (
                   <>
                     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontWeight: "bold", fontSize: "16px" }}>
-                      <span>Remaining Outstanding:</span>
+                      <span>Estimated Remaining Outstanding:</span>
                       <span style={{ color: "#dc2626" }}>₹{outstanding.toFixed(2)}</span>
                     </div>
                     <div style={{ fontSize: "12px", color: "#6b7280", fontStyle: "italic", backgroundColor: "#f0fdf4", padding: "8px", borderRadius: "4px", border: "1px solid #34d399" }}>
-                      Outstanding amount updated based on partial returns and payments
+                      Estimate based on current inputs; server will finalize after save
                     </div>
                   </>
                 )
