@@ -3,7 +3,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 
 const execAsync = promisify(exec);
-const BASE_URL = 'https://invoices-dk2w.onrender.com/api';
+const BASE_URL = 'http://localhost:5000/api';
 
 let authToken = '';
 let companyId = '';

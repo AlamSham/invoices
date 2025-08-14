@@ -1,7 +1,7 @@
 // Simple test to check database connection and get test data
 import axios from 'axios';
 
-const BASE_URL = 'https://invoices-dk2w.onrender.com/api';
+const BASE_URL = 'http://localhost:5000/api';
 
 const testBasicEndpoints = async () => {
   console.log('🔍 Testing basic endpoints...\n');

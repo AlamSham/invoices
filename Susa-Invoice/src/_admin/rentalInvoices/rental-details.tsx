@@ -84,7 +84,7 @@ export default function RentalDetails() {
       const token = localStorage.getItem("refreshToken")
       
       const response = await axios.get(
-        `https://invoices-dk2w.onrender.com/api/invoice/rental/details/${invoiceId}`,
+        `http://localhost:5000/api/invoice/rental/details/${invoiceId}`,
         {
           headers: { Authorization: `Bearer ${token}` },
         }
@@ -915,6 +915,7 @@ export default function RentalDetails() {
                   const partialPaid = ((invoiceData.partialReturnHistory || []) as any[]).reduce((s, e: any) => s + (Number(e?.partialPayment || 0)), 0)
                   const damage = Number((invoiceData.paymentDetails as any)?.damageCharges || 0)
                   const computedFinalPayment = Math.max(0, finalAmt - (originalAdvance + partialPaid))
+                  const refund = Number((invoiceData.paymentDetails as any)?.refundAmount || 0)
                   return (
                     <>
                       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
@@ -937,6 +938,12 @@ export default function RentalDetails() {
                         <span style={{ fontWeight: 600 }}>Final Payment (at Settlement):</span>
                         <span style={{ fontWeight: 'bold', color: '#0f766e' }}>₹{computedFinalPayment.toLocaleString()}</span>
                       </div>
+                      {refund > 0 && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', backgroundColor: '#ecfdf5', padding: '6px 8px', borderRadius: '6px' }}>
+                          <span style={{ fontWeight: 600, color: '#065f46' }}>Refund to Customer:</span>
+                          <span style={{ fontWeight: 'bold', color: '#059669' }}>₹{refund.toLocaleString()}</span>
+                        </div>
+                      )}
                     </>
                   )
                 })()}
@@ -946,26 +953,18 @@ export default function RentalDetails() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
                   <span style={{ fontWeight: 600 }}>Outstanding:</span>
                   <span style={{ fontWeight: 'bold', color: (() => {
-                    const finalAmt = Math.max(0, (invoiceData.paymentDetails?.finalAmount ?? 0))
-                    const paid = Math.max(0, (invoiceData.paymentDetails?.paidAmount ?? 0))
-                    const backendOut = invoiceData.paymentDetails?.outstandingAmount
-                    let display = backendOut !== undefined && backendOut !== null ? backendOut : (finalAmt - paid)
-                    // For FULL settlement, if completed or fully paid, force 0
-                    if (getInvoiceTypeFromData(invoiceData) === 'FULL' && (invoiceData.rentalDetails?.status === 'COMPLETED' || paid >= finalAmt)) {
-                      display = 0
-                    }
-                    return Math.max(0, display) === 0 ? '#059669' : '#dc2626'
+                    const finalAmt = Number(invoiceData?.paymentDetails?.finalAmount ?? 0)
+                    const paid = Number(invoiceData?.paymentDetails?.paidAmount ?? 0)
+                    const backendOut = (invoiceData.paymentDetails as any)?.outstandingAmount
+                    const display = (backendOut !== undefined && backendOut !== null) ? Number(backendOut) : (finalAmt - paid)
+                    return display <= 0 ? '#059669' : '#dc2626'
                   })() }}>
                     ₹{(() => {
-                      const finalAmt = Math.max(0, (invoiceData.paymentDetails?.finalAmount ?? 0))
-                      const paid = Math.max(0, (invoiceData.paymentDetails?.paidAmount ?? 0))
-                      const backendOut = invoiceData.paymentDetails?.outstandingAmount
-                      let display = backendOut !== undefined && backendOut !== null ? backendOut : (finalAmt - paid)
-                      // For FULL settlement, if completed or fully paid, force 0
-                      if (getInvoiceTypeFromData(invoiceData) === 'FULL' && (invoiceData.rentalDetails?.status === 'COMPLETED' || paid >= finalAmt)) {
-                        display = 0
-                      }
-                      return Math.max(0, display)
+                      const finalAmt = Number((invoiceData.paymentDetails as any)?.finalAmount ?? 0)
+                      const paid = Number((invoiceData.paymentDetails as any)?.paidAmount ?? 0)
+                      const backendOut = (invoiceData.paymentDetails as any)?.outstandingAmount
+                      const display = (backendOut !== undefined && backendOut !== null) ? Number(backendOut) : (finalAmt - paid)
+                      return Number(display)
                     })().toLocaleString()}
                   </span>
                 </div>

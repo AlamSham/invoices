@@ -108,7 +108,7 @@ export default function PartialReturn() {
     try {
       
       const response = await axios.get(
-        `https://invoices-dk2w.onrender.com/api/invoice/rental/details/${parentInvoiceId}`
+        `http://localhost:5000/api/invoice/rental/details/${parentInvoiceId}`
       )
       
       if (response.data.success) {
@@ -361,7 +361,7 @@ export default function PartialReturn() {
       
       // Update existing invoice with partial return data
       const response = await axios.put(
-        `https://invoices-dk2w.onrender.com/api/invoice/rental/update/${parentInvoiceId}`,
+        `http://localhost:5000/api/invoice/rental/update/${parentInvoiceId}`,
         requestData,
         {
           headers: {

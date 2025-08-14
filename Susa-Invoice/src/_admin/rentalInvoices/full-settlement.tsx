@@ -121,7 +121,7 @@ export default function FullSettlement() {
       const token = localStorage.getItem("refreshToken")
       
       const response = await axios.get(
-        `https://invoices-dk2w.onrender.com/api/invoice/rental/details/${parentInvoiceId}`,
+        `http://localhost:5000/api/invoice/rental/details/${parentInvoiceId}`,
         {
           headers: { Authorization: `Bearer ${token}` },
         }
@@ -210,7 +210,7 @@ export default function FullSettlement() {
         const previewFinal = Math.max(0, subtotalSum + totalTaxAmount)
         // IMPORTANT: Server is source of truth for outstanding; do NOT recompute as total - paid here
         const serverOutstanding = typeof parent.paymentDetails?.outstandingAmount === 'string' ? parseFloat(parent.paymentDetails?.outstandingAmount) || 0 : parent.paymentDetails?.outstandingAmount || 0
-        const previewOutstanding = Math.max(0, serverOutstanding)
+        const previewOutstanding = serverOutstanding
 
         setInvoiceData({
           invoiceNumber: `FULL-${parent.invoiceNumber}`,
@@ -416,7 +416,7 @@ export default function FullSettlement() {
       
       // Update existing invoice with partial return data
       const response = await axios.put(
-        `https://invoices-dk2w.onrender.com/api/invoice/rental/update/${parentInvoiceId}`,
+        `http://localhost:5000/api/invoice/rental/update/${parentInvoiceId}`,
         requestData,
         {
           headers: {
@@ -681,7 +681,7 @@ export default function FullSettlement() {
                 })()}
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "12px" }}>
                   <span style={{ fontWeight: "600" }}>Outstanding (from previous invoices):</span>
-                  <span style={{ fontWeight: "bold", fontSize: "18px", color: "#dc2626" }}>₹{(invoiceData.paymentDetails?.outstandingAmount || 0).toLocaleString()}</span>
+                  <span style={{ fontWeight: "bold", fontSize: "18px", color: (invoiceData.paymentDetails?.outstandingAmount || 0) >= 0 ? "#dc2626" : "#059669" }}>₹{(invoiceData.paymentDetails?.outstandingAmount || 0).toLocaleString()}</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
                   <span style={{ fontWeight: 600 }}>Damage Charges (Total):</span>
@@ -689,58 +689,89 @@ export default function FullSettlement() {
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
                   <span style={{ fontWeight: 600 }}>Amount Due Now (Outstanding + Damages):</span>
-                  <span style={{ fontWeight: "bold", color: "#7c3aed" }}>₹{(((invoiceData.paymentDetails?.outstandingAmount || 0) + (totalDamageCharges || 0)) || 0).toLocaleString()}</span>
+                  <span style={{ fontWeight: "bold", color: (((invoiceData.paymentDetails?.outstandingAmount || 0) + (totalDamageCharges || 0)) || 0) >= 0 ? "#7c3aed" : "#059669" }}>₹{(((invoiceData.paymentDetails?.outstandingAmount || 0) + (totalDamageCharges || 0)) || 0).toLocaleString()}</span>
                 </div>
                 {/* Removed 'Final Amount (This Invoice)' to avoid confusion in Full Settlement */}
                 
                 <div style={{ marginBottom: "16px" }}>
-                  <label style={{ display: "block", marginBottom: "6px", fontWeight: "600", color: "#0c4a6e" }}>Final Payment Amount:</label>
-                  {isEditingMode ? (
-                    <input
-                      type="number"
-                      min="0"
-                      max={((invoiceData.paymentDetails?.outstandingAmount || 0) + (totalDamageCharges || 0))}
-                      value={finalPayment || ''}
-                      onChange={(e) => {
-                        const raw = parseFloat(e.target.value) || 0
-                        const due = ((invoiceData.paymentDetails?.outstandingAmount || 0) + (totalDamageCharges || 0))
-                        const clamped = Math.max(0, Math.min(raw, Math.max(0, due)))
-                        setFinalPayment(clamped)
-                      }}
-                      style={{
-                        border: "2px solid #0ea5e9",
-                        padding: "12px",
-                        borderRadius: "6px",
-                        fontSize: "16px",
-                        width: "100%",
-                        backgroundColor: "#f8fafc"
-                      }}
-                      placeholder="Enter final settlement amount (₹)"
-                    />
-                  ) : (
-                    <div style={{ fontWeight: 700 }}>₹{(finalPayment || 0).toLocaleString()}</div>
-                  )}
-                  {isSaveInvalid && (
-                    <div style={{ marginTop: '6px', fontSize: '12px', color: '#dc2626' }}>
-                      Enter 0 to ₹{Math.max(0, ((invoiceData.paymentDetails?.outstandingAmount || 0) + (totalDamageCharges || 0))).toLocaleString()}
+                  {dueNow < 0 ? (
+                    <div style={{
+                      display: 'flex', justifyContent: 'space-between',
+                      padding: '12px', border: '2px solid #22c55e', borderRadius: '6px', background: '#f0fdf4',
+                      fontWeight: 700
+                    }}>
+                      <span style={{ color: '#14532d' }}>Refund Due to Customer:</span>
+                      <span style={{ color: '#059669' }}>₹{Math.abs(dueNow).toLocaleString()}</span>
                     </div>
+                  ) : (
+                    <>
+                      <label style={{ display: "block", marginBottom: "6px", fontWeight: "600", color: "#0c4a6e" }}>Final Payment Amount:</label>
+                      {isEditingMode ? (
+                        <input
+                          type="number"
+                          min="0"
+                          max={((invoiceData.paymentDetails?.outstandingAmount || 0) + (totalDamageCharges || 0))}
+                          value={finalPayment || ''}
+                          onChange={(e) => {
+                            const raw = parseFloat(e.target.value) || 0
+                            const due = ((invoiceData.paymentDetails?.outstandingAmount || 0) + (totalDamageCharges || 0))
+                            const clamped = Math.max(0, Math.min(raw, Math.max(0, due)))
+                            setFinalPayment(clamped)
+                          }}
+                          style={{
+                            border: "2px solid #0ea5e9",
+                            padding: "12px",
+                            borderRadius: "6px",
+                            fontSize: "16px",
+                            width: "100%",
+                            backgroundColor: "#f8fafc"
+                          }}
+                          placeholder="Enter final settlement amount (₹)"
+                        />
+                      ) : (
+                        <div style={{ fontWeight: 700 }}>₹{(finalPayment || 0).toLocaleString()}</div>
+                      )}
+                      {isSaveInvalid && (
+                        <div style={{ marginTop: '6px', fontSize: '12px', color: '#dc2626' }}>
+                          Enter 0 to ₹{Math.max(0, ((invoiceData.paymentDetails?.outstandingAmount || 0) + (totalDamageCharges || 0))).toLocaleString()}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
               <div>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "12px", fontWeight: "bold", fontSize: "16px" }}>
-                  <span>After Payment Outstanding:</span>
-                  <span style={{ color: finalPayment >= ((invoiceData.paymentDetails?.outstandingAmount || 0) + (totalDamageCharges || 0)) ? "#059669" : "#dc2626" }}>
-                    ₹{Math.max(0, ((invoiceData.paymentDetails?.outstandingAmount || 0) + (totalDamageCharges || 0)) - finalPayment).toLocaleString()}
-                  </span>
-                </div>
-                <div style={{ fontSize: "12px", color: "#6b7280", fontStyle: "italic", backgroundColor: "#f8fafc", padding: "8px", borderRadius: "4px", border: "1px solid #cbd5e1" }}>
-                   Final settlement will mark all items as returned and rental as completed
-                </div>
-                {finalPayment >= ((invoiceData.paymentDetails?.outstandingAmount || 0) + (totalDamageCharges || 0)) && (
-                  <div style={{ fontSize: "12px", color: "#059669", fontWeight: "bold", marginTop: "8px", backgroundColor: "#f0fdf4", padding: "8px", borderRadius: "4px", border: "1px solid #22c55e" }}>
-                    Outstanding will be fully settled!
-                  </div>
+                {dueNow < 0 ? (
+                  <>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', fontWeight: 'bold', fontSize: '16px' }}>
+                      <span>Refund to Customer:</span>
+                      <span style={{ color: '#059669' }}>₹{Math.abs(dueNow).toLocaleString()}</span>
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px', fontWeight: 'bold', fontSize: '16px' }}>
+                      <span>After Payment Outstanding:</span>
+                      <span style={{ color: '#059669' }}>₹0</span>
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#6b7280', fontStyle: 'italic', backgroundColor: '#f8fafc', padding: '8px', borderRadius: '4px', border: '1px solid #cbd5e1' }}>
+                      Saving will record a refund and mark rental as completed
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "12px", fontWeight: "bold", fontSize: "16px" }}>
+                      <span>After Payment Outstanding:</span>
+                      <span style={{ color: finalPayment >= ((invoiceData.paymentDetails?.outstandingAmount || 0) + (totalDamageCharges || 0)) ? "#059669" : "#dc2626" }}>
+                        ₹{Math.max(0, ((invoiceData.paymentDetails?.outstandingAmount || 0) + (totalDamageCharges || 0)) - finalPayment).toLocaleString()}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#6b7280", fontStyle: "italic", backgroundColor: "#f8fafc", padding: "8px", borderRadius: "4px", border: "1px solid " }}>
+                       Final settlement will mark all items as returned and rental as completed
+                    </div>
+                    {finalPayment >= ((invoiceData.paymentDetails?.outstandingAmount || 0) + (totalDamageCharges || 0)) && (
+                      <div style={{ fontSize: "12px", color: "#059669", fontWeight: "bold", marginTop: "8px", backgroundColor: "#f0fdf4", padding: "8px", borderRadius: "4px", border: "1px solid #22c55e" }}>
+                        Outstanding will be fully settled!
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>

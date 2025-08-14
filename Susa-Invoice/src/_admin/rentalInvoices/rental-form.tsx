@@ -1294,15 +1294,29 @@ export default function RentalForm({
               </div>
             </div>
             <div>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontWeight: "bold", fontSize: "16px" }}>
-                <span>Outstanding Balance:</span>
-                <span style={{ color: "#dc2626" }}>
-                  ₹{((invoiceData.totalAmount || 0) - (typeof invoiceData.paymentDetails?.advanceAmount === 'string' ? parseFloat(invoiceData.paymentDetails.advanceAmount) || 0 : invoiceData.paymentDetails?.advanceAmount || 0)).toLocaleString()}
-                </span>
-              </div>
-              <div style={{ fontSize: "12px", color: "#6b7280", fontStyle: "italic", backgroundColor: "#fffbeb", padding: "8px", borderRadius: "4px", border: "1px solid #fbbf24" }}>
-                 This balance will be collected upon delivery/completion of rental service
-              </div>
+              {(() => {
+                const total = (invoiceData.totalAmount || 0)
+                const adv = (typeof invoiceData.paymentDetails?.advanceAmount === 'string'
+                  ? parseFloat(invoiceData.paymentDetails.advanceAmount) || 0
+                  : invoiceData.paymentDetails?.advanceAmount || 0)
+                const diff = total - adv // can be negative
+                const isRefund = diff < 0
+                return (
+                  <>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontWeight: "bold", fontSize: "16px" }}>
+                      <span>Outstanding Balance:</span>
+                      <span style={{ color: isRefund ? '#059669' : (diff > 0 ? '#dc2626' : '#374151') }}>
+                        ₹{diff.toLocaleString()}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#6b7280", fontStyle: "italic", backgroundColor: "#fffbeb", padding: "8px", borderRadius: "4px", border: "1px solid #fbbf24" }}>
+                      {isRefund
+                        ? 'Advance exceeds total. Refund will be issued at delivery/completion of rental service.'
+                        : 'This balance will be collected upon delivery/completion of rental service'}
+                    </div>
+                  </>
+                )
+              })()}
             </div>
           </div>
         </div>
@@ -1376,24 +1390,28 @@ export default function RentalForm({
             </div>
             <div>
               {(() => {
-                // In PARTIAL view mode, prefer server-calculated outstanding.
+                // Always compute signed outstanding so it can be negative (advance/paid exceeds total)
+                const computeColor = (v: number) => (v < 0 ? '#059669' : v > 0 ? '#dc2626' : '#374151')
+
                 if (invoiceType === 'PARTIAL' && !isEditingMode) {
-                  const backendOutstanding = invoiceData.paymentDetails?.outstandingAmount
-                  if (backendOutstanding !== undefined && backendOutstanding !== null) {
-                    return (
-                      <>
-                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontWeight: "bold", fontSize: "16px" }}>
-                          <span>Remaining Outstanding:</span>
-                          <span style={{ color: "#dc2626" }}>₹{Number(backendOutstanding).toLocaleString()}</span>
-                        </div>
-                        <div style={{ fontSize: "12px", color: "#6b7280", fontStyle: "italic", backgroundColor: "#f0fdf4", padding: "8px", borderRadius: "4px", border: "1px solid #34d399" }}>
-                          Server-calculated outstanding
-                        </div>
-                      </>
-                    )
-                  }
+                  const total = Number(invoiceData.totalAmount || 0)
+                  const adv = Number(parseFloat(String(invoiceData.paymentDetails?.advanceAmount || 0)) || 0)
+                  const paid = Number(invoiceData.paymentDetails?.paidAmount || 0)
+                  const diff = total - (adv + paid) // signed
+                  return (
+                    <>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontWeight: "bold", fontSize: "16px" }}>
+                        <span>Remaining Outstanding:</span>
+                        <span style={{ color: computeColor(diff) }}>₹{diff.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                      </div>
+                      <div style={{ fontSize: "12px", color: "#6b7280", fontStyle: "italic", backgroundColor: "#f0fdf4", padding: "8px", borderRadius: "4px", border: "1px solid #34d399" }}>
+                        Calculated from current invoice total minus (advance + partial payments)
+                      </div>
+                    </>
+                  )
                 }
-                // Compute estimated outstanding during edit.
+
+                // Compute estimated outstanding during edit with preview of remaining items
                 let totalForOutstanding = invoiceData.totalAmount || 0
                 if (invoiceType === 'PARTIAL' && isEditingMode) {
                   const previewSum = (invoiceData.items || []).reduce((sum: number, item: any) => {
@@ -1420,12 +1438,12 @@ export default function RentalForm({
                   totalForOutstanding = estimatedTotal
                 }
                 const totalPaid = ((parseFloat(String(invoiceData.paymentDetails?.advanceAmount || 0)) || 0) + (invoiceData.paymentDetails?.paidAmount || 0))
-                const outstanding = Math.max(0, totalForOutstanding - totalPaid)
+                const diff = totalForOutstanding - totalPaid // signed
                 return (
                   <>
                     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontWeight: "bold", fontSize: "16px" }}>
                       <span>Estimated Remaining Outstanding:</span>
-                      <span style={{ color: "#dc2626" }}>₹{outstanding.toFixed(2)}</span>
+                      <span style={{ color: computeColor(diff) }}>₹{diff.toFixed(2)}</span>
                     </div>
                     <div style={{ fontSize: "12px", color: "#6b7280", fontStyle: "italic", backgroundColor: "#f0fdf4", padding: "8px", borderRadius: "4px", border: "1px solid #34d399" }}>
                       Estimate based on current inputs; server will finalize after save

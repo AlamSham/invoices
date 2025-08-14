@@ -97,7 +97,7 @@ export default function AdvanceInvoice() {
   // Fetch next invoice number
   const fetchNextInvoiceNumber = async () => {
     try {
-      const response = await axios.get("https://invoices-dk2w.onrender.com/api/invoice/nextInvoiceNumber")
+      const response = await axios.get("http://localhost:5000/api/invoice/nextInvoiceNumber")
       if (response.data && response.data.nextInvoiceNumber) {
         setInvoiceData((prev) => ({
           ...prev,
@@ -113,7 +113,7 @@ export default function AdvanceInvoice() {
     if (!companyId) return
 
     try {
-      const response = await axios.get(`https://invoices-dk2w.onrender.com/api/companies/getById/${companyId}`)
+      const response = await axios.get(`http://localhost:5000/api/companies/getById/${companyId}`)
       if (response.data) {
         const company = response.data
         setInvoiceData((prev) => ({
@@ -181,7 +181,9 @@ export default function AdvanceInvoice() {
       // Calculate outstanding amount for advance invoice
       const advanceAmount = parseFloat(String(prev.paymentDetails?.advanceAmount || '0')) || 0
       const paidAmount = parseFloat(String(prev.paymentDetails?.paidAmount || 0)) || 0
-      const outstandingAmount = Math.max(0, totalAmount - advanceAmount - paidAmount)
+      const rawDiff = totalAmount - advanceAmount - paidAmount
+      const outstandingAmount = Math.max(0, rawDiff)
+      const refundAmount = Math.max(0, -(rawDiff))
       
       return {
         ...prev,
@@ -195,11 +197,11 @@ export default function AdvanceInvoice() {
         paymentDetails: {
           ...prev.paymentDetails,
           totalRentAmount: totalAmount,
-          outstandingAmount: outstandingAmount,
+          outstandingAmount,
           finalAmount: totalAmount,
           advanceAmount: prev.paymentDetails?.advanceAmount || '',
           paidAmount: prev.paymentDetails?.paidAmount || 0,
-          refundAmount: prev.paymentDetails?.refundAmount || 0
+          refundAmount
         }
       }
     })
@@ -229,11 +231,23 @@ export default function AdvanceInvoice() {
         return cleanedItem
       })
       
+      // Compute diff to send minus outstanding when advance exceeds total
+      const totalAmt = Number(invoiceDataWithoutUnused.totalAmount || 0)
+      const advAmt = Number((invoiceDataWithoutUnused as any).paymentDetails?.advanceAmount || 0)
+      const paidAmt = Number((invoiceDataWithoutUnused as any).paymentDetails?.paidAmount || 0)
+      const diffOutstanding = totalAmt - advAmt - paidAmt // can be negative (we WANT this)
+
       const requestData = {
         ...invoiceDataWithoutUnused,
         items: cleanedItems,
         companyId: companyId,
-        invoiceType: 'ADVANCE' // Keep as ADVANCE for rental invoices
+        invoiceType: 'ADVANCE', // Keep as ADVANCE for rental invoices
+        paymentDetails: {
+          ...((invoiceDataWithoutUnused as any).paymentDetails || {}),
+          totalRentAmount: totalAmt,
+          outstandingAmount: diffOutstanding, // send minus when advance > total
+          refundAmount: 0 // represent excess via negative outstanding instead of refundAmount
+        }
       }
       
       // Console log the complete payload
@@ -241,7 +255,7 @@ export default function AdvanceInvoice() {
       
       // Save to backend first
       const response = await axios.post(
-        'https://invoices-dk2w.onrender.com/api/invoice/rental/advance',
+        'http://localhost:5000/api/invoice/rental/advance',
         requestData,
         {
           headers: {

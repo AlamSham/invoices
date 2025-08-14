@@ -34,7 +34,7 @@ const AdminLayout = () => {
 
 const handleLogout = async () => {
   try {
-    await axios.post("https://invoices-dk2w.onrender.com/api/user/logout");
+    await axios.post("http://localhost:5000/api/user/logout");
 
     localStorage.clear();
     navigate("/");

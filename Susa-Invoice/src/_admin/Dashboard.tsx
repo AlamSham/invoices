@@ -53,7 +53,7 @@ const Dashboard = () => {
       setLoading(true);
       const token = localStorage.getItem('token');
       const companyId = localStorage.getItem('companyId');
-      const baseUrl = 'https://invoices-dk2w.onrender.com';
+      const baseUrl = 'http://localhost:5000';
 
       const url = companyId
         ? `${baseUrl}/api/dashboard/summary?companyId=${companyId}`

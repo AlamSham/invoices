@@ -246,7 +246,9 @@ export const updateRentalInvoice = async (req, res) => {
       const serverOutstandingBefore = Number(existingPD.outstandingAmount || 0);
       const finalPayment = Number(pd.finalPayment || 0);
       const damageCharges = Number(pd.damageCharges || 0);
-      const finalOutstanding = Math.max(0, serverOutstandingBefore + damageCharges - finalPayment);
+      const netDue = serverOutstandingBefore + damageCharges - finalPayment; // signed
+      const finalOutstanding = netDue > 0 ? netDue : 0;
+      const refundAmount = netDue < 0 ? Math.abs(netDue) : 0;
       const computedPaymentDetails = {
         // Start from server state; DO NOT override totals with client preview values
         ...existingPD,
@@ -256,6 +258,7 @@ export const updateRentalInvoice = async (req, res) => {
         // Only settlement-related fields are updated
         paidAmount: Number(existingPD.paidAmount || 0) + finalPayment,
         outstandingAmount: finalOutstanding,
+        refundAmount,
         damageCharges: Number(damageCharges || 0),
         // Preserve historical totals; do not touch finalAmount/totalRentAmount here
         finalAmount: Number(existingPD.finalAmount || 0),
@@ -300,16 +303,18 @@ export const updateRentalInvoice = async (req, res) => {
     }
 
     // === Server-side payment computation for partial returns ===
-    // Apply remaining advance first, then additionalPayment; compute outstanding.
+    // Apply remaining advance first, then accept full additionalPayment; allow negative outstanding to represent excess paid.
     const totalAmount = Number(req.body.totalAmount || 0);
     const additionalPayment = Number(req.body.additionalPayment || 0);
     const remainingAdvanceBefore = Number(existingPD.advanceAmount || 0);
     // Advance applied cannot exceed total
     const advanceApplied = Math.min(remainingAdvanceBefore, totalAmount);
     const afterAdvance = totalAmount - advanceApplied;
-    // Additional payment applied up to the remaining after advance
-    const additionalApplied = Math.min(additionalPayment, afterAdvance);
-    const outstandingAmount = Math.max(0, afterAdvance - additionalApplied);
+    // Do NOT cap additional payment; overpayment will be reflected as negative outstanding
+    const additionalApplied = Number(additionalPayment || 0);
+    // Global signed outstanding relative to total available credit before this update
+    // desired: total - (advance_before + additionalPayment)
+    const outstandingAmount = (totalAmount - (remainingAdvanceBefore + additionalApplied));
     const remainingAdvanceAfter = remainingAdvanceBefore - advanceApplied;
 
     // Persist computed PD while respecting any extra fields from client
@@ -317,7 +322,7 @@ export const updateRentalInvoice = async (req, res) => {
       ...existingPD,
       ...pd,
       advanceAmount: remainingAdvanceAfter, // remaining advance post application
-      paidAmount: Number(existingPD.paidAmount || 0) + additionalApplied, // accumulate partial payments
+      paidAmount: Number(existingPD.paidAmount || 0) + additionalApplied, // accumulate partial payments (full additionalPayment)
       outstandingAmount,
       finalAmount: totalAmount,
       // Keep original advance for UI clarity

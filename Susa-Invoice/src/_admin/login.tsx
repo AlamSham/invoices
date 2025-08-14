@@ -32,7 +32,7 @@ export default function Login() {
     try {
       // Step 1: Login
       const loginResponse = await axios.post<LoginResponse>(
-        "https://invoices-dk2w.onrender.com/api/user/login",
+        "http://localhost:5000/api/user/login",
         { email, password },
         { headers: { "Content-Type": "application/json" } }
       )
@@ -43,7 +43,7 @@ export default function Login() {
 
         // Step 2: Validate refreshToken
         const validateResponse = await axios.post<ValidateResponse>(
-          "https://invoices-dk2w.onrender.com/api/user/validate",
+          "http://localhost:5000/api/user/validate",
           { refreshToken },
           { headers: { "Content-Type": "application/json" } }
         )
