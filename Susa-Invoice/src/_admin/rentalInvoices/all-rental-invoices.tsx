@@ -65,7 +65,7 @@ export default function AllRentalInvoices({ onNewInvoice, onViewInvoice }: AllRe
 
       try {
         setLoading(true)
-        const response = await axios.get<ApiResponse>(`http://localhost:5000/api/invoice/rental/company/${companyId}`, {
+        const response = await axios.get<ApiResponse>(`https://invoices-dk2w.onrender.com/api/invoice/rental/company/${companyId}`, {
           headers: {
             Authorization: `Bearer ${localStorage.getItem('token')}`
           }

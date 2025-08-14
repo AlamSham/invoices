@@ -46,6 +46,8 @@ export interface RentalInvoiceData {
     startDate?: string
     endDate?: string
     partialReturnDate?: string
+    // Accrual start date for remaining qty after partial return
+    accruesFrom?: string
     // Damage fields (for full settlement)
     damagedQuantity?: string | number
     damageFinePerUnit?: string | number
@@ -103,6 +105,17 @@ export interface RentalInvoiceData {
       returnedQuantity?: number
       partialAmount?: number
     }[]
+    // Client preview snapshot for remaining items at that partial event
+    previewRemainingSummary?: {
+      productName?: string
+      remainingQuantity?: number
+      accruesFrom?: string
+      endDate?: string
+      days?: number
+      dailyRate?: number
+      previewAmount?: number
+    }[]
+    clientPreview?: boolean
     partialPayment?: number
     notes?: string
     createdAt?: string

@@ -72,10 +72,10 @@ export default function AdvanceInvoice() {
     termsConditions:
       "Warranty provided by principal company only\nGoods once sold will not be taken back\nAll disputes subject to Delhi jurisdiction",
     bankDetails: {
-      bankName: "Yes Bank Limited",
-      accountName: "Your Business Pvt.Ltd",
-      accountNumber: "038263400000072",
-      ifscCode: "YESB0000382",
+      bankName: "Punjab National Bank",
+      accountName: "MAHIPAL SINGH TIMBER",
+      accountNumber: "1653202100003292",
+      ifscCode: "PUNB0165320",
     },
     rentalDetails: {
       startDate: new Date().toISOString().split('T')[0],
@@ -97,7 +97,7 @@ export default function AdvanceInvoice() {
   // Fetch next invoice number
   const fetchNextInvoiceNumber = async () => {
     try {
-      const response = await axios.get("http://localhost:5000/api/invoice/nextInvoiceNumber")
+      const response = await axios.get("https://invoices-dk2w.onrender.com/api/invoice/nextInvoiceNumber")
       if (response.data && response.data.nextInvoiceNumber) {
         setInvoiceData((prev) => ({
           ...prev,
@@ -113,7 +113,7 @@ export default function AdvanceInvoice() {
     if (!companyId) return
 
     try {
-      const response = await axios.get(`http://localhost:5000/api/companies/getById/${companyId}`)
+      const response = await axios.get(`https://invoices-dk2w.onrender.com/api/companies/getById/${companyId}`)
       if (response.data) {
         const company = response.data
         setInvoiceData((prev) => ({
@@ -255,7 +255,7 @@ export default function AdvanceInvoice() {
       
       // Save to backend first
       const response = await axios.post(
-        'http://localhost:5000/api/invoice/rental/advance',
+        'https://invoices-dk2w.onrender.com/api/invoice/rental/advance',
         requestData,
         {
           headers: {

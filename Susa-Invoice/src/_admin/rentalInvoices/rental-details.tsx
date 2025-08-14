@@ -84,7 +84,7 @@ export default function RentalDetails() {
       const token = localStorage.getItem("refreshToken")
       
       const response = await axios.get(
-        `http://localhost:5000/api/invoice/rental/details/${invoiceId}`,
+        `https://invoices-dk2w.onrender.com/api/invoice/rental/details/${invoiceId}`,
         {
           headers: { Authorization: `Bearer ${token}` },
         }
@@ -92,6 +92,19 @@ export default function RentalDetails() {
       
       if (response.data.success) {
         const invoiceDetails = response.data.data
+        // Debug: inspect API data before setting state
+        try {
+          console.group('[RentalDetails] fetchInvoiceDetails')
+          console.log('invoiceId:', invoiceId)
+          console.log('invoiceNumber:', invoiceDetails?.invoiceNumber)
+          console.log('invoiceType:', invoiceDetails?.invoiceType)
+          console.log('paymentDetails.finalAmount:', invoiceDetails?.paymentDetails?.finalAmount)
+          console.log('paymentDetails.damageCharges:', invoiceDetails?.paymentDetails?.damageCharges)
+          console.log('previewRemainingSummary:', invoiceDetails?.previewRemainingSummary)
+          console.log('reviewRemainingSummary (fallback):', (invoiceDetails as any)?.reviewRemainingSummary)
+          console.log('items:', invoiceDetails?.items)
+          console.groupEnd()
+        } catch (e) {}
         setInvoiceData(invoiceDetails)
       } else {
         throw new Error("Invoice not found")
@@ -430,119 +443,190 @@ export default function RentalDetails() {
                 border: '2px solid #e2e8f0'
               }}>
                 <h3 style={{ fontWeight: 'bold', marginBottom: 12, color: '#0f172a', fontSize: 16 }}>Items</h3>
-                <h4 style={{ fontWeight: 600, marginBottom: 10, color: '#0f172a' }}>Item Movement Summary</h4>
-                {(() => {
-                  type Seg = { qty: number; start?: string; end?: string }
-                  type Ret = { date: string; qty: number }
-                  const byProduct = new Map<string, Seg[]>()
-                  const earliestStartByProduct = new Map<string, string>()
-                  const earliestQtyByProduct = new Map<string, number>()
-                  const latestEndByProduct = new Map<string, string>()
-                  ;(invoiceData?.items || []).forEach((it: any) => {
-                    const name = it.productName || '-'
-                    const qty = typeof it.rentedQuantity === 'string' ? parseFloat(it.rentedQuantity) || 0 : (it.rentedQuantity || 0)
-                    const segs = byProduct.get(name) || []
-                    segs.push({ qty, start: it.startDate, end: it.endDate })
-                    byProduct.set(name, segs)
-                    if (it.startDate) {
-                      const cur = earliestStartByProduct.get(name)
-                      if (!cur || new Date(it.startDate) < new Date(cur)) {
-                        earliestStartByProduct.set(name, it.startDate)
-                        earliestQtyByProduct.set(name, qty)
+                <div style={{ overflowX: 'auto' }}>
+                  {(() => {
+                    // Build grouped rows by productName; SI No. only for first row per product
+                    // We show quantity under the 'Items' column; remove separate Qty column
+                    // Added 'status' column (e.g., Return)
+                    type Row = { si?: string; issueDate?: string; returnDate?: string; itemCode: number | string; itemName: string; status?: string; days: number | string; rate: number | string; amount: number | string }
+                    const d: any = invoiceData as any
+                    const items = (d.items || []) as any[]
+                    const prh = (d.partialReturnHistory || []) as any[]
+                    const groups = new Map<string, { issued: any[]; returns: { date: string; name: string; qty?: number | string }[] }>()
+
+                    // Group items (issued segments) by product name
+                    items.forEach((it) => {
+                      const name = it.productName || '-'
+                      const g = groups.get(name) || { issued: [], returns: [] }
+                      g.issued.push(it)
+                      groups.set(name, g)
+                    })
+
+                    // Group partial returns by product name (capture returnedQuantity per product)
+                    prh.forEach((entry: any) => {
+                      const retDate = entry.returnDate || entry.createdAt || d.Date
+                      if (Array.isArray(entry.returnedItems)) {
+                        entry.returnedItems.forEach((ri: any) => {
+                          const name = ri.productName || '-'
+                          const qty = typeof ri.returnedQuantity === 'string' ? (parseFloat(ri.returnedQuantity) || 0) : (ri?.returnedQuantity ?? ri?.quantity ?? '-')
+                          const g = groups.get(name) || { issued: [], returns: [] }
+                          g.returns.push({ date: retDate, name, qty })
+                          groups.set(name, g)
+                        })
                       }
+                    })
+
+                    // Prepare previewRemainingSummary for per-product Extend rows
+                    const psrc: any = d
+                    let prs: any[] = []
+                    if (Array.isArray(psrc.previewRemainingSummary)) {
+                      prs = psrc.previewRemainingSummary
+                    } else if (Array.isArray(psrc.reviewRemainingSummary)) {
+                      prs = psrc.reviewRemainingSummary
+                    } else if (Array.isArray(psrc.partialReturnHistory) && psrc.partialReturnHistory.length > 0) {
+                      const lastWithPreview = [...psrc.partialReturnHistory].reverse().find((e: any) => Array.isArray(e?.previewRemainingSummary) && e.previewRemainingSummary.length > 0)
+                      if (lastWithPreview) prs = lastWithPreview.previewRemainingSummary
                     }
-                    if (it.endDate) {
-                      const curEnd = latestEndByProduct.get(name)
-                      if (!curEnd || new Date(it.endDate) > new Date(curEnd)) {
-                        latestEndByProduct.set(name, it.endDate)
+
+                    // Flatten into ordered rows with SI per product
+                    const productNames = Array.from(groups.keys())
+                    const rows: Row[] = []
+                    productNames.forEach((name, idx) => {
+                      const g = groups.get(name) as { issued: any[]; returns: { date: string; name: string; qty?: number | string }[] }
+                      // Take the first issued segment as main display (closest to PREVIEW style)
+                      const main = g.issued[0]
+                      const start = main?.startDate
+                      const end = main?.endDate
+                      const displayReturnMain = main?.partialReturnDate || end
+                      const days = (start && displayReturnMain) ? daysBetween(start, displayReturnMain) : '-'
+                      const rateNum = typeof main?.dailyRate === 'string' ? (parseFloat(main.dailyRate) || 0) : (main?.dailyRate ?? 0)
+                      const qtyNum = typeof main?.rentedQuantity === 'string' ? (parseFloat(main.rentedQuantity) || 0) : (main?.rentedQuantity ?? 0)
+                      const rate: number | string = (days !== '-' ? rateNum : (rateNum || '-'))
+                      const amount: number | string = (typeof days === 'number' ? (qtyNum * rateNum * days) : '-')
+                      rows.push({ si: String(idx + 1), issueDate: start, returnDate: displayReturnMain, itemCode: (qtyNum || '-'), itemName: name, status: 'Issued', days, rate, amount })
+
+                      // Add return rows for same product (no SI); show issueDate = start for clarity
+                      g.returns
+                        .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
+                        .forEach((r) => {
+                          rows.push({ si: '', issueDate: start, returnDate: r.date, itemCode: (r.qty ?? '-'), itemName: name, status: 'Return', days: '-', rate: '-', amount: '-' })
+                        })
+
+                      // Fallback: if item has partialReturnDate on itself, ensure one return row exists
+                      if (!g.returns.length && main?.partialReturnDate) {
+                        rows.push({ si: '', issueDate: start, returnDate: main.partialReturnDate, itemCode: (typeof main?.returnedQuantity === 'number' ? main.returnedQuantity : (main?.returnedQuantity ?? '-')), itemName: name, status: 'Return', days: '-', rate: '-', amount: '-' })
                       }
-                    }
-                  })
-                  const returnsMap = new Map<string, Ret[]>()
-                  const headerDate = (invoiceData as any)?.Date || (invoiceData as any)?.createdAt || ''
-                  ;(((invoiceData as any)?.partialReturnHistory) || []).forEach((entry: any) => {
-                    const retDate = entry.returnDate || entry.createdAt || headerDate
-                    if (Array.isArray(entry.returnedItems)) {
-                      entry.returnedItems.forEach((ri: any) => {
-                        const name = ri.productName || '-'
-                        const qty = typeof ri.returnedQuantity === 'string' ? parseFloat(ri.returnedQuantity) || 0 : (ri.returnedQuantity || 0)
-                        const arr = returnsMap.get(name) || []
-                        arr.push({ date: retDate, qty })
-                        returnsMap.set(name, arr)
+
+                      // Extend rows for this product (from previewRemainingSummary)
+                      const productPreviews = Array.isArray(prs) ? prs.filter((p: any) => (p?.productName || '-') === name) : []
+                      productPreviews.forEach((p: any) => {
+                        const issue = p?.accruesFrom
+                        const pend = p?.endDate
+                        const itemsQty = p?.remainingQuantity ?? '-'
+                        const pname = p?.productName || '-'
+                        const pdays = p?.days ?? '-'
+                        const prate = p ? (typeof p.dailyRate === 'number' ? p.dailyRate : (Number(p.dailyRate || 0))) : '-'
+                        const previewAmount = p ? (typeof p.previewAmount === 'number' ? p.previewAmount : Number(p.previewAmount || 0)) : 0
+                        rows.push({ si: '', issueDate: issue, returnDate: pend, itemCode: (itemsQty ?? '-'), itemName: pname, status: 'Extend', days: (pdays ?? '-'), rate: (typeof prate === 'number' ? prate : '-'), amount: Number(previewAmount || 0) })
                       })
+
+                      // Damage rows for this product (per damaged item)
+                      const productDamages = items.filter((it: any) => (it?.productName || '-') === name && Number(it?.damagedQuantity || 0) > 0)
+                      const settleDateRaw = ((d.paymentDetails || {}).settlementDate || d.updatedAt || d.Date) as string | undefined
+                      productDamages.forEach((it: any) => {
+                        const qty = Number(it?.damagedQuantity || 0)
+                        const perUnitFine = Number(it?.damageFinePerUnit || 0)
+                        const dmgAmt = Number(((it?.damageAmount ?? (qty * perUnitFine)) || 0))
+                        rows.push({ si: '', issueDate: (settleDateRaw || undefined) as any, returnDate: undefined as any, itemCode: (qty || '-'), itemName: name, status: 'Damage', days: '-', rate: (perUnitFine || '-'), amount: dmgAmt })
+                      })
+                    })
+
+                    // Safe date formatter for table cells
+                    const fmtDate = (v?: any) => {
+                      if (!v) return '-'
+                      const dt = new Date(v)
+                      return isNaN(dt.getTime()) ? '-' : dt.toLocaleDateString('en-GB')
                     }
-                  })
-                  const productNames = Array.from(new Set<string>([ ...byProduct.keys(), ...returnsMap.keys() ]))
-                  if (!productNames.length) {
-                    return <div style={{ fontSize: 12, color: '#64748b' }}>No movement data.</div>
-                  }
-                  return (
-                    <div style={{ overflowX: 'auto' }}>
+
+                    // Render table
+                    return (
                       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, border: '1px solid #e5e7eb' }}>
                         <thead>
-                          <tr style={{ backgroundColor: '#f8fafc' }}>
-                            <th style={{ textAlign: 'center', padding: 8, borderBottom: '1px solid #e2e8f0', borderRight: '1px solid #e5e7eb', width: 56 }}>S.No</th>
-                            <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #e2e8f0', borderRight: '1px solid #e5e7eb' }}>Event</th>
-                            <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #e2e8f0', borderRight: '1px solid #e5e7eb' }}>Product</th>
-                            <th style={{ textAlign: 'right', padding: 8, borderBottom: '1px solid #e2e8f0', borderRight: '1px solid #e5e7eb' }}>Qty</th>
-                            <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #e2e8f0' }}>Date / Period</th>
+                          <tr style={{ backgroundColor: '#f3f4f6' }}>
+                            <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #e5e7eb' }}>SI No.</th>
+                            <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #e5e7eb' }}>ISSUE DATE</th>
+                            <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #e5e7eb' }}>RETURN DATE</th>
+                            <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #e5e7eb' }}>Items</th>
+                            <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #e5e7eb' }}>Name of Item</th>
+                            <th style={{ textAlign: 'left', padding: 8, borderBottom: '1px solid #e5e7eb' }}>Status</th>
+                            <th style={{ textAlign: 'right', padding: 8, borderBottom: '1px solid #e5e7eb' }}>No Days</th>
+                            <th style={{ textAlign: 'right', padding: 8, borderBottom: '1px solid #e5e7eb' }}>Rate</th>
+                            <th style={{ textAlign: 'right', padding: 8, borderBottom: '1px solid #e5e7eb' }}>Amount</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {productNames.map((name) => {
-                            const segs = byProduct.get(name) || []
-                            const earliestStart = earliestStartByProduct.get(name)
-                            const issuedQty = earliestQtyByProduct.get(name) ?? (segs[0]?.qty || 0)
-                            const retArr = (returnsMap.get(name) || []).sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
-                            const totalReturned = retArr.reduce((s, r) => s + (r.qty || 0), 0)
-                            const remainingQty = Math.max(0, (issuedQty || 0) - (totalReturned || 0))
-                            const lastReturn = retArr.length ? retArr[retArr.length - 1].date : ''
-                            const dayAfter = lastReturn ? (() => { const d = new Date(lastReturn); d.setDate(d.getDate() + 1); return d.toISOString().split('T')[0] })() : ''
-                            const latestEnd = segs.reduce<string | undefined>((acc, s) => {
-                              if (!acc) return s.end
-                              if (!s.end) return acc
-                              return new Date(s.end) > new Date(acc) ? s.end : acc
-                            }, undefined)
-                            const extDays = (dayAfter && latestEnd) ? daysBetween(dayAfter, latestEnd) : 0
-                            return (
-                              <Fragment key={`ims-inline-${name}`}>
-                                <tr>
-                                  <th colSpan={4} style={{ textAlign: 'left', backgroundColor: '#f1f5f9', padding: 8, borderBottom: '1px solid #e5e7eb' }}>Product: {name}</th>
+                          {rows.length === 0 ? (
+                            <tr>
+                              <td colSpan={9} style={{ padding: 8, textAlign: 'center', color: '#6b7280' }}>No data.</td>
+                            </tr>
+                          ) : (
+                            rows.map((r, idx) => (
+                              <tr key={`xls-row-${idx}`} style={{ backgroundColor: idx % 2 === 0 ? '#ffffff' : '#fafafa' }}>
+                                <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{r.si ?? ''}</td>
+                                <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{fmtDate(r.issueDate)}</td>
+                                <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{fmtDate(r.returnDate)}</td>
+                                <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{r.itemCode}</td>
+                                <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{r.itemName}</td>
+                                <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{r.status || '-'}</td>
+                                <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', textAlign: 'right' }}>{r.days}</td>
+                                <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', textAlign: 'right' }}>{typeof r.rate === 'number' ? `₹${r.rate.toLocaleString()}` : r.rate}</td>
+                                <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', textAlign: 'right' }}>{typeof r.amount === 'number' ? `₹${r.amount.toLocaleString()}` : r.amount}</td>
+                              </tr>
+                            ))
+                          )}
+                          {/* Per-product Extend and Damage rows are integrated above within the grouped rows */}
+                          {/* Final bill at bottom, after Damage */}
+                          {(() => {
+                            const psrc: any = (invoiceData as any)
+                            let prs: any[] = []
+                            if (Array.isArray(psrc.previewRemainingSummary)) {
+                              prs = psrc.previewRemainingSummary
+                            } else if (Array.isArray(psrc.reviewRemainingSummary)) {
+                              prs = psrc.reviewRemainingSummary
+                            } else if (Array.isArray(psrc.partialReturnHistory) && psrc.partialReturnHistory.length > 0) {
+                              const lastWithPreview = [...psrc.partialReturnHistory].reverse().find((e: any) => Array.isArray(e?.previewRemainingSummary) && e.previewRemainingSummary.length > 0)
+                              if (lastWithPreview) prs = lastWithPreview.previewRemainingSummary
+                            }
+                            const p = prs && prs.length > 0 ? (prs[0] as any) : null
+                            const issue = p?.accruesFrom
+                            const end = p?.endDate
+                            const itemsQty = p?.remainingQuantity ?? '-'
+                            const name = p?.productName || '-'
+                            const days = p?.days ?? '-'
+                            const rate = p ? (typeof p.dailyRate === 'number' ? p.dailyRate : (Number(p.dailyRate || 0))) : '-'
+                            const finalAmount = Number((d.paymentDetails || {}).finalAmount || 0)
+                            if (finalAmount > 0) {
+                              return (
+                                <tr key="final-bill-summary" style={{ backgroundColor: '#ecfeff' }}>
+                                  <td style={{ padding: 8, borderBottom: '1px solid #bae6fd' }}>*</td>
+                                  <td style={{ padding: 8, borderBottom: '1px solid #bae6fd' }}>{issue ? new Date(issue).toLocaleDateString('en-GB') : '-'}</td>
+                                  <td style={{ padding: 8, borderBottom: '1px solid #bae6fd' }}>{end ? new Date(end).toLocaleDateString('en-GB') : '-'}</td>
+                                  <td style={{ padding: 8, borderBottom: '1px solid #bae6fd' }}>{itemsQty}</td>
+                                  <td style={{ padding: 8, borderBottom: '1px solid #bae6fd' }}>{name}</td>
+                                  <td style={{ padding: 8, borderBottom: '1px solid #bae6fd' }}>Final bill</td>
+                                  <td style={{ padding: 8, borderBottom: '1px solid #bae6fd', textAlign: 'right' }}>{days}</td>
+                                  <td style={{ padding: 8, borderBottom: '1px solid #bae6fd', textAlign: 'right' }}>{typeof rate === 'number' ? `₹${Number(rate).toLocaleString()}` : '-'}</td>
+                                  <td style={{ padding: 8, borderBottom: '1px solid #bae6fd', textAlign: 'right' }}>{`₹${finalAmount.toLocaleString()}`}</td>
                                 </tr>
-                                <tr style={{ backgroundColor: '#ffffff' }}>
-                                  <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', textAlign: 'center' }}>1</td>
-                                  <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb' }}>ISSUED</td>
-                                  <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb' }}>{name}</td>
-                                  <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', textAlign: 'right' }}>{issuedQty}</td>
-                                  <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{earliestStart ? new Date(earliestStart).toLocaleDateString('en-GB') : '-'}</td>
-                                </tr>
-                                {retArr.map((r, idx) => (
-                                  <tr key={`${name}-ret-${idx}`} style={{ backgroundColor: idx % 2 === 0 ? '#fafafa' : '#ffffff' }}>
-                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', textAlign: 'center' }}>{idx + 2}</td>
-                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb' }}>PARTIAL RETURN</td>
-                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb' }}>{name}</td>
-                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', textAlign: 'right' }}>{r.qty}</td>
-                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{new Date(r.date).toLocaleDateString('en-GB')}</td>
-                                  </tr>
-                                ))}
-                                {(remainingQty > 0 && latestEnd) && (
-                                  <tr>
-                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', textAlign: 'center' }}>{retArr.length + 2}</td>
-                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb' }}>EXTENDED</td>
-                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb' }}>{name}</td>
-                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb', borderRight: '1px solid #e5e7eb', textAlign: 'right' }}>{remainingQty}</td>
-                                    <td style={{ padding: 8, borderBottom: '1px solid #e5e7eb' }}>{(dayAfter ? new Date(dayAfter).toLocaleDateString('en-GB') : '-') + ' → ' + (latestEnd ? new Date(latestEnd).toLocaleDateString('en-GB') : '')}{extDays ? ` (${extDays} days)` : ''}</td>
-                                  </tr>
-                                )}
-                              </Fragment>
-                            )
-                          })}
+                              )
+                            }
+                            return null
+                          })()}
                         </tbody>
                       </table>
-                    </div>
-                  )
-                })()}
-                
+                    )
+                  })()}
+                </div>
               </div>
             ) : undefined}
           />
@@ -765,8 +849,7 @@ export default function RentalDetails() {
           </div>
         )}
 
-        {/* Final Settlement Items Table (shown only for FULL invoices) */}
-        {getInvoiceTypeFromData(invoiceData) === 'FULL' && null}
+        
 
         {/* Legacy Logs section: removed for FULL invoices (timeline replaces); logs below are conditioned */}
 
@@ -919,7 +1002,7 @@ export default function RentalDetails() {
                   return (
                     <>
                       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
-                        <span style={{ fontWeight: 600 }}>Final Amount:</span>
+                        <span style={{ fontWeight: 600 }}>Final Amount (with GST 18%):</span>
                         <span style={{ fontWeight: 'bold' }}>₹{finalAmt.toLocaleString()}</span>
                       </div>
                       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
@@ -994,4 +1077,3 @@ export default function RentalDetails() {
     </div>
   )
 }
-

@@ -153,9 +153,20 @@ export const getInvoiceById = async (req, res) => {
         message: "Invoice not found"
       });
     }
+    // Derive previewRemainingSummary from latest partialReturnHistory entry for convenience
+    let data = invoice.toObject ? invoice.toObject() : JSON.parse(JSON.stringify(invoice));
+    try {
+      const prh = Array.isArray(data.partialReturnHistory) ? data.partialReturnHistory : [];
+      const lastWithPreview = [...prh].reverse().find(e => Array.isArray(e?.previewRemainingSummary) && e.previewRemainingSummary.length > 0);
+      if (lastWithPreview) {
+        data.previewRemainingSummary = lastWithPreview.previewRemainingSummary;
+        // Backward-compat alias if some clients check reviewRemainingSummary
+        data.reviewRemainingSummary = lastWithPreview.previewRemainingSummary;
+      }
+    } catch {}
     res.json({
       success: true,
-      data: invoice
+      data
     });
   } catch (error) {
     res.status(500).json({
@@ -241,11 +252,34 @@ export const updateRentalInvoice = async (req, res) => {
       existingPD && typeof existingPD.originalAdvanceAmount !== 'undefined'
     ) ? Number(existingPD.originalAdvanceAmount || 0) : Number(existingPD.advanceAmount || 0);
 
-    // === FULL Settlement: consume finalPayment and damageCharges; do NOT re-apply advance logic ===
+    // === FULL Settlement: consume finalPayment and damageCharges; persist per-item damage fields ===
     if (isFull) {
       const serverOutstandingBefore = Number(existingPD.outstandingAmount || 0);
       const finalPayment = Number(pd.finalPayment || 0);
-      const damageCharges = Number(pd.damageCharges || 0);
+
+      // Merge only damage-related fields from incoming items into existing items
+      const incomingItems = Array.isArray(req.body.items) ? req.body.items : [];
+      const mergedDamageItems = (existingInvoice.items || []).map((exist, i) => {
+        const inc = incomingItems[i] || {};
+        const base = (exist.toObject?.() || exist) || {};
+        const dQty = Number(inc.damagedQuantity ?? base.damagedQuantity ?? 0);
+        const dFine = Number(inc.damageFinePerUnit ?? base.damageFinePerUnit ?? 0);
+        const dAmt = Number(
+          inc.damageAmount ?? (Number(dQty || 0) * Number(dFine || 0)) ?? base.damageAmount ?? 0
+        );
+        return {
+          ...base,
+          damagedQuantity: dQty,
+          damageFinePerUnit: dFine,
+          damageAmount: dAmt,
+        };
+      });
+
+      // If client didn't send aggregate damageCharges, derive from items
+      const derivedDamageCharges = mergedDamageItems.reduce((sum, it) => sum + Number(it.damageAmount || 0), 0);
+      const damageCharges = Number(
+        typeof pd.damageCharges !== 'undefined' ? pd.damageCharges : derivedDamageCharges
+      );
       const netDue = serverOutstandingBefore + damageCharges - finalPayment; // signed
       const finalOutstanding = netDue > 0 ? netDue : 0;
       const refundAmount = netDue < 0 ? Math.abs(netDue) : 0;
@@ -271,8 +305,8 @@ export const updateRentalInvoice = async (req, res) => {
         // but paymentDetails is authoritative from computedPaymentDetails
         ...req.body,
         paymentDetails: computedPaymentDetails,
-        // IMPORTANT: Do NOT overwrite items for FULL settlement; keep original item periods
-        items: existingInvoice.items,
+        // IMPORTANT: For FULL settlement, persist damage fields; keep other item fields as-is
+        items: mergedDamageItems,
         rentalDetails: { ...existingInvoice.rentalDetails, ...rd },
         lastUpdated: new Date(),
       };

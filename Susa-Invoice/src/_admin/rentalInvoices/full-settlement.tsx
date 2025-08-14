@@ -85,12 +85,12 @@ export default function FullSettlement() {
       "Net 30 Days from invoice date\nPayment via NEFT/RTGS/Cheque\nDelayed payments subject to 1.5% monthly interest",
     termsConditions:
       "Warranty provided by principal company only\nGoods once sold will not be taken back\nAll disputes subject to Delhi jurisdiction",
-    bankDetails: {
-      bankName: "Yes Bank Limited",
-      accountName: "Your Business Pvt.Ltd",
-      accountNumber: "038263400000072",
-      ifscCode: "YESB0000382",
-    },
+      bankDetails: {
+        bankName: "Punjab National Bank",
+        accountName: "MAHIPAL SINGH TIMBER",
+        accountNumber: "1653202100003292",
+        ifscCode: "PUNB0165320",
+      },
     rentalDetails: {
       startDate: new Date().toISOString().split('T')[0],
       endDate: "",
@@ -121,7 +121,7 @@ export default function FullSettlement() {
       const token = localStorage.getItem("refreshToken")
       
       const response = await axios.get(
-        `http://localhost:5000/api/invoice/rental/details/${parentInvoiceId}`,
+        `https://invoices-dk2w.onrender.com/api/invoice/rental/details/${parentInvoiceId}`,
         {
           headers: { Authorization: `Bearer ${token}` },
         }
@@ -416,7 +416,7 @@ export default function FullSettlement() {
       
       // Update existing invoice with partial return data
       const response = await axios.put(
-        `http://localhost:5000/api/invoice/rental/update/${parentInvoiceId}`,
+        `https://invoices-dk2w.onrender.com/api/invoice/rental/update/${parentInvoiceId}`,
         requestData,
         {
           headers: {

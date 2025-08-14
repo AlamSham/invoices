@@ -32,7 +32,7 @@ const Company: React.FC = () => {
   const fetchCompanies = async () => {
     setLoading(true)
     try {
-      const res = await axios.get("http://localhost:5000/api/companies/getAll")
+      const res = await axios.get("https://invoices-dk2w.onrender.com/api/companies/getAll")
       setCompanies(res.data)
       setFilteredCompanies(res.data)
     } catch (err) {
@@ -46,7 +46,7 @@ const Company: React.FC = () => {
     e.preventDefault()
     setLoading(true)
     try {
-      await axios.post("http://localhost:5000/api/companies/add", newCompany)
+      await axios.post("https://invoices-dk2w.onrender.com/api/companies/add", newCompany)
       setShowModal(false)
       setNewCompany({ name: "", address: "", gstNumber: "" })
       fetchCompanies()
@@ -61,7 +61,7 @@ const Company: React.FC = () => {
     if (window.confirm("Are you sure you want to delete this company?")) {
       setLoading(true)
       try {
-        await axios.delete(`http://localhost:5000/api/companies/deleteById/${id}`)
+        await axios.delete(`https://invoices-dk2w.onrender.com/api/companies/deleteById/${id}`)
         fetchCompanies()
       } catch (err) {
         console.error("Error deleting company", err)
@@ -76,7 +76,7 @@ const Company: React.FC = () => {
     setLoading(true)
     try {
       if (editingCompany) {
-        await axios.put(`http://localhost:5000/api/companies/updateById/${editingCompany._id}`, editingCompany)
+        await axios.put(`https://invoices-dk2w.onrender.com/api/companies/updateById/${editingCompany._id}`, editingCompany)
         setEditingCompany(null)
         fetchCompanies()
       }

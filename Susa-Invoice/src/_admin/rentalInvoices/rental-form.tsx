@@ -1394,18 +1394,16 @@ export default function RentalForm({
                 const computeColor = (v: number) => (v < 0 ? '#059669' : v > 0 ? '#dc2626' : '#374151')
 
                 if (invoiceType === 'PARTIAL' && !isEditingMode) {
-                  const total = Number(invoiceData.totalAmount || 0)
-                  const adv = Number(parseFloat(String(invoiceData.paymentDetails?.advanceAmount || 0)) || 0)
-                  const paid = Number(invoiceData.paymentDetails?.paidAmount || 0)
-                  const diff = total - (adv + paid) // signed
+                  // Use server-calculated outstanding to match backend truth
+                  const serverOutstanding = Number(invoiceData.paymentDetails?.outstandingAmount ?? 0)
                   return (
                     <>
                       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px", fontWeight: "bold", fontSize: "16px" }}>
                         <span>Remaining Outstanding:</span>
-                        <span style={{ color: computeColor(diff) }}>₹{diff.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                        <span style={{ color: computeColor(serverOutstanding) }}>₹{serverOutstanding.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
                       </div>
                       <div style={{ fontSize: "12px", color: "#6b7280", fontStyle: "italic", backgroundColor: "#f0fdf4", padding: "8px", borderRadius: "4px", border: "1px solid #34d399" }}>
-                        Calculated from current invoice total minus (advance + partial payments)
+                        Finalized by server for this partial event
                       </div>
                     </>
                   )

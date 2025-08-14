@@ -1,7 +1,7 @@
 // Test script for Rental Invoice System Endpoints
 import axios from 'axios';
 
-const BASE_URL = 'http://localhost:5000/api';
+const BASE_URL = 'https://invoices-dk2w.onrender.com/api';
 
 // Test data
 const testData = {

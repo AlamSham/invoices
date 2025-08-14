@@ -78,12 +78,12 @@ export default function PartialReturn() {
       "Net 30 Days from invoice date\nPayment via NEFT/RTGS/Cheque\nDelayed payments subject to 1.5% monthly interest",
     termsConditions:
       "Warranty provided by principal company only\nGoods once sold will not be taken back\nAll disputes subject to Delhi jurisdiction",
-    bankDetails: {
-      bankName: "Yes Bank Limited",
-      accountName: "Your Business Pvt.Ltd",
-      accountNumber: "038263400000072",
-      ifscCode: "YESB0000382",
-    },
+      bankDetails: {
+        bankName: "Punjab National Bank",
+        accountName: "MAHIPAL SINGH TIMBER",
+        accountNumber: "1653202100003292",
+        ifscCode: "PUNB0165320",
+      },
     rentalDetails: {
       startDate: new Date().toISOString().split('T')[0],
       endDate: "",
@@ -108,15 +108,17 @@ export default function PartialReturn() {
     try {
       
       const response = await axios.get(
-        `http://localhost:5000/api/invoice/rental/details/${parentInvoiceId}`
+        `https://invoices-dk2w.onrender.com/api/invoice/rental/details/${parentInvoiceId}`
       )
       
       if (response.data.success) {
         const parent = response.data.data
         
         // Populate all fields with parent invoice data
+        const parentInvNum: string = String(parent.invoiceNumber || '')
+        const displayInvNum = parentInvNum.startsWith('PARTIAL-') ? parentInvNum : `PARTIAL-${parentInvNum}`
         setInvoiceData({
-          invoiceNumber: `PARTIAL-${parent.invoiceNumber}`,
+          invoiceNumber: displayInvNum,
           Date: new Date().toISOString().split("T")[0],
           dueDate: parent.dueDate || "",
           poNumber: parent.poNumber || "",
@@ -151,7 +153,7 @@ export default function PartialReturn() {
           invoiceType: 'PARTIAL',
         })
         // Keep a copy of parent's original advance for display purposes in UI
-        setOriginalAdvanceAmount(Number(parent?.paymentDetails?.advanceAmount || 0))
+        setOriginalAdvanceAmount(Number(parent?.paymentDetails?.originalAdvanceAmount ?? parent?.paymentDetails?.advanceAmount ?? 0))
         
       }
     } catch (error: any) {
@@ -247,6 +249,15 @@ export default function PartialReturn() {
         const retQty = typeof cleanedItem.returnedQuantity === 'string' ? parseFloat(cleanedItem.returnedQuantity) || 0 : cleanedItem.returnedQuantity || 0
         if (retQty > 0 && (!cleanedItem.partialReturnDate || cleanedItem.partialReturnDate.trim() === '')) {
           cleanedItem.partialReturnDate = today
+        }
+        // Compute and include accrual start for remaining quantity so server can persist it
+        if (cleanedItem.partialReturnDate) {
+          const d = new Date(cleanedItem.partialReturnDate)
+          d.setDate(d.getDate() + 1)
+          cleanedItem.accruesFrom = d.toISOString().split('T')[0]
+        } else if (cleanedItem.startDate) {
+          // fallback to item start if no partial return date available
+          cleanedItem.accruesFrom = cleanedItem.startDate
         }
         // Coerce numeric fields to numbers for backend persistence
         cleanedItem.rentedQuantity = typeof cleanedItem.rentedQuantity === 'string' ? parseFloat(cleanedItem.rentedQuantity) || 0 : (cleanedItem.rentedQuantity || 0)
@@ -361,7 +372,7 @@ export default function PartialReturn() {
       
       // Update existing invoice with partial return data
       const response = await axios.put(
-        `http://localhost:5000/api/invoice/rental/update/${parentInvoiceId}`,
+        `https://invoices-dk2w.onrender.com/api/invoice/rental/update/${parentInvoiceId}`,
         requestData,
         {
           headers: {

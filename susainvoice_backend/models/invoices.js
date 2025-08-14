@@ -49,6 +49,8 @@ const InvoiceSchema = new mongoose.Schema({
     startDate: { type: String, required: false },
     endDate: { type: String, required: false },
     partialReturnDate: { type: String, required: false }, // Date when items were returned
+    // Accrual start date for remaining quantity after a partial return (typically day after partialReturnDate)
+    accruesFrom: { type: String, required: false },
     // Damage/Fine fields for full settlement
     damagedQuantity: { type: Number, required: false, default: 0 },
     damageFinePerUnit: { type: Number, required: false, default: 0 },
@@ -113,6 +115,17 @@ const InvoiceSchema = new mongoose.Schema({
       returnedQuantity: { type: Number, required: false },
       partialAmount: { type: Number, required: false } // Amount adjusted for this partial return
     }],
+    // Persist client preview for remaining items at the time of this partial event
+    previewRemainingSummary: [{
+      productName: { type: String, required: false },
+      remainingQuantity: { type: Number, required: false },
+      accruesFrom: { type: String, required: false },
+      endDate: { type: String, required: false },
+      days: { type: Number, required: false },
+      dailyRate: { type: Number, required: false },
+      previewAmount: { type: Number, required: false }
+    }],
+    clientPreview: { type: Boolean, required: false },
     partialPayment: { type: Number, required: false, default: 0 },
     notes: { type: String, required: false },
     createdAt: { type: Date, default: Date.now }
